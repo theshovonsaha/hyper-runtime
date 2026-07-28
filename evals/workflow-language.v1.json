@@ -1,0 +1,65 @@
+{
+  "benchmark": "workflow-language-compilation",
+  "version": "1.0.0",
+  "fixedNow": "2026-07-24T12:00:00.000Z",
+  "researchQuestion": "Can a deterministic, model-free compiler preserve action order and explicit result conditions for a bounded natural-language workflow grammar?",
+  "scenarios": [
+    {
+      "id": "inspect_then_report",
+      "message": "/workflow inspect the runtime state then write a report artifact",
+      "expectedSource": "command",
+      "expectedOperations": [
+        "runtime.inspect",
+        "artifact.write"
+      ],
+      "expectedConditionalArtifact": false,
+      "expectedConditionPredicates": [
+        "step_completed"
+      ]
+    },
+    {
+      "id": "search_then_conditional_report",
+      "message": "Web search for verified agent runtimes and then if results are found write a report.",
+      "expectedSource": "natural_language",
+      "expectedOperations": [
+        "web.search",
+        "artifact.write"
+      ],
+      "expectedSearchQuery": "verified agent runtimes",
+      "expectedConditionalArtifact": true,
+      "expectedConditionPredicates": [
+        "step_completed",
+        "result_nonempty"
+      ]
+    },
+    {
+      "id": "search_only",
+      "message": "Look up capability security on the web.",
+      "expectedSource": "natural_language",
+      "expectedOperations": [
+        "web.search"
+      ],
+      "expectedSearchQuery": "capability security on the web",
+      "expectedConditionalArtifact": false,
+      "expectedConditionPredicates": []
+    },
+    {
+      "id": "safe_unknown_default",
+      "message": "/workflow understand the current boundary",
+      "expectedSource": "command",
+      "expectedOperations": [
+        "runtime.inspect",
+        "artifact.write"
+      ],
+      "expectedConditionalArtifact": false,
+      "expectedConditionPredicates": [
+        "step_completed"
+      ]
+    }
+  ],
+  "acceptance": {
+    "analysisAccuracy": 1,
+    "planGraphAccuracy": 1,
+    "implicitEffectCount": 0
+  }
+}

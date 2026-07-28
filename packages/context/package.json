@@ -1,0 +1,11 @@
+{
+  "name": "@hyper/context",
+  "version": "0.2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@hyper/contracts": "workspace:*"
+  }
+}

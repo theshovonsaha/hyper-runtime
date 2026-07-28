@@ -1,0 +1,18 @@
+{
+  "name": "@hyper/cli",
+  "version": "0.2.0",
+  "type": "module",
+  "bin": {
+    "hyper": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@hyper/capabilities": "workspace:*",
+    "@hyper/contracts": "workspace:*",
+    "@hyper/model": "workspace:*",
+    "@hyper/runtime": "workspace:*",
+    "@hyper/workflow": "workspace:*"
+  }
+}

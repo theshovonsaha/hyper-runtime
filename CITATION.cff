@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use this research prototype, please cite it using this metadata."
+title: "Hyper-Runtime: Authorized-Condition Evals"
+type: software
+authors:
+  - family-names: "Saha"
+    given-names: "Shovon"
+version: 0.1.0
+date-released: 2026-07-24
+url: "https://github.com/theshovonsaha/hyper-runtime"
+license: MIT
+abstract: >-
+  A research prototype and deterministic benchmark for explicit intent
+  contracts, condition state, capability-bounded execution, observed-state
+  verification, and evidence-linked action receipts in tool-using agents.

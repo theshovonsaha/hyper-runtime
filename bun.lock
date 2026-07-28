@@ -1,0 +1,137 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "hyper-runtime",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.9.3",
+      },
+    },
+    "packages/capabilities": {
+      "name": "@hyper/capabilities",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/contracts": "workspace:*",
+      },
+    },
+    "packages/capability-memory": {
+      "name": "@hyper/capability-memory",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/contracts": "workspace:*",
+      },
+    },
+    "packages/cli": {
+      "name": "@hyper/cli",
+      "version": "0.2.0",
+      "bin": {
+        "hyper": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@hyper/capabilities": "workspace:*",
+        "@hyper/contracts": "workspace:*",
+        "@hyper/model": "workspace:*",
+        "@hyper/runtime": "workspace:*",
+        "@hyper/workflow": "workspace:*",
+      },
+    },
+    "packages/context": {
+      "name": "@hyper/context",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/contracts": "workspace:*",
+      },
+    },
+    "packages/contracts": {
+      "name": "@hyper/contracts",
+      "version": "0.2.0",
+    },
+    "packages/delegation": {
+      "name": "@hyper/delegation",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/contracts": "workspace:*",
+      },
+    },
+    "packages/evals": {
+      "name": "@hyper/evals",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/capability-memory": "workspace:*",
+        "@hyper/context": "workspace:*",
+        "@hyper/contracts": "workspace:*",
+        "@hyper/model": "workspace:*",
+        "@hyper/runtime": "workspace:*",
+        "@hyper/workflow": "workspace:*",
+      },
+    },
+    "packages/model": {
+      "name": "@hyper/model",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/context": "workspace:*",
+        "@hyper/contracts": "workspace:*",
+      },
+    },
+    "packages/planning": {
+      "name": "@hyper/planning",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/contracts": "workspace:*",
+      },
+    },
+    "packages/runtime": {
+      "name": "@hyper/runtime",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/contracts": "workspace:*",
+      },
+    },
+    "packages/workflow": {
+      "name": "@hyper/workflow",
+      "version": "0.2.0",
+      "dependencies": {
+        "@hyper/context": "workspace:*",
+        "@hyper/contracts": "workspace:*",
+        "@hyper/delegation": "workspace:*",
+        "@hyper/model": "workspace:*",
+        "@hyper/runtime": "workspace:*",
+      },
+    },
+  },
+  "packages": {
+    "@hyper/capabilities": ["@hyper/capabilities@workspace:packages/capabilities"],
+
+    "@hyper/capability-memory": ["@hyper/capability-memory@workspace:packages/capability-memory"],
+
+    "@hyper/cli": ["@hyper/cli@workspace:packages/cli"],
+
+    "@hyper/context": ["@hyper/context@workspace:packages/context"],
+
+    "@hyper/contracts": ["@hyper/contracts@workspace:packages/contracts"],
+
+    "@hyper/delegation": ["@hyper/delegation@workspace:packages/delegation"],
+
+    "@hyper/evals": ["@hyper/evals@workspace:packages/evals"],
+
+    "@hyper/model": ["@hyper/model@workspace:packages/model"],
+
+    "@hyper/planning": ["@hyper/planning@workspace:packages/planning"],
+
+    "@hyper/runtime": ["@hyper/runtime@workspace:packages/runtime"],
+
+    "@hyper/workflow": ["@hyper/workflow@workspace:packages/workflow"],
+
+    "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
+
+    "@types/node": ["@types/node@26.1.1", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-nxAkRSVkN1Y0JC1W8ky/fTfkGsMmcrRsbx+3XoZE+rMOX71kLYTV7fLXpqud1GpbpP5TuffXFqfX7fH2GgZREw=="],
+
+    "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
+  }
+}

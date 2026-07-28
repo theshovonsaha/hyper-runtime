@@ -1,0 +1,15 @@
+{
+  "name": "@hyper/workflow",
+  "version": "0.2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@hyper/context": "workspace:*",
+    "@hyper/contracts": "workspace:*",
+    "@hyper/delegation": "workspace:*",
+    "@hyper/model": "workspace:*",
+    "@hyper/runtime": "workspace:*"
+  }
+}

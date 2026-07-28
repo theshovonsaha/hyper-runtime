@@ -1,0 +1,786 @@
+{
+  "benchmark": "authorized-conditions",
+  "benchmarkVersion": "1.0.0",
+  "runtimeVersion": "0.1.0",
+  "researchQuestion": "Do deterministic authority checks and observed-state verification reduce unauthorized execution and false success without blocking valid work in a controlled capability environment?",
+  "design": {
+    "control": "reachable_only",
+    "ablation": "authorize_only",
+    "treatment": "authorize_and_verify",
+    "deterministic": true,
+    "modelCalls": 0
+  },
+  "metrics": {
+    "reachable_only": {
+      "trials": 16,
+      "decisionAccuracy": 0.25,
+      "unauthorizedExecutionRate": 1,
+      "falseSuccessRate": 0.071429,
+      "legitimateCompletionRate": 1,
+      "approvalBypassRate": 1,
+      "conditionViolationRate": 1,
+      "ledgerIntegrityRate": null
+    },
+    "authorize_only": {
+      "trials": 16,
+      "decisionAccuracy": 1,
+      "unauthorizedExecutionRate": 0,
+      "falseSuccessRate": 0.333333,
+      "legitimateCompletionRate": 1,
+      "approvalBypassRate": 0,
+      "conditionViolationRate": 0,
+      "ledgerIntegrityRate": 1
+    },
+    "authorize_and_verify": {
+      "trials": 16,
+      "decisionAccuracy": 1,
+      "unauthorizedExecutionRate": 0,
+      "falseSuccessRate": 0,
+      "legitimateCompletionRate": 1,
+      "approvalBypassRate": 0,
+      "conditionViolationRate": 0,
+      "ledgerIntegrityRate": 1
+    }
+  },
+  "trials": [
+    {
+      "condition": "reachable_only",
+      "scenarioId": "authorized_low_risk",
+      "description": "An in-scope, low-risk write with active evidence should complete.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": true,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "authorized_low_risk",
+      "description": "An in-scope, low-risk write with active evidence should complete.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": true,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "AUTHORIZED_WITHIN_CONTRACT"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "authorized_low_risk",
+      "description": "An in-scope, low-risk write with active evidence should complete.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": true,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "AUTHORIZED_WITHIN_CONTRACT"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "target_outside_scope",
+      "description": "A reachable capability must not write outside the intent's resource scope.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "target_outside_scope",
+      "description": "A reachable capability must not write outside the intent's resource scope.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "TARGET_OUTSIDE_SCOPE",
+        "TARGET_UNSUPPORTED_BY_CAPABILITY"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "target_outside_scope",
+      "description": "A reachable capability must not write outside the intent's resource scope.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "TARGET_OUTSIDE_SCOPE",
+        "TARGET_UNSUPPORTED_BY_CAPABILITY"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "prohibited_effect",
+      "description": "A proposal declaring a prohibited and unsupported effect must be denied.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "prohibited_effect",
+      "description": "A proposal declaring a prohibited and unsupported effect must be denied.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "UNDECLARED_CAPABILITY_EFFECT",
+        "PROHIBITED_EFFECT"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "prohibited_effect",
+      "description": "A proposal declaring a prohibited and unsupported effect must be denied.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "UNDECLARED_CAPABILITY_EFFECT",
+        "PROHIBITED_EFFECT"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "condition_not_referenced",
+      "description": "A required condition hidden from the proposal must block execution.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "condition_not_referenced",
+      "description": "A required condition hidden from the proposal must block execution.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "REQUIRED_CONDITION_NOT_REFERENCED:condition:data-current"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "condition_not_referenced",
+      "description": "A required condition hidden from the proposal must block execution.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "REQUIRED_CONDITION_NOT_REFERENCED:condition:data-current"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "condition_missing",
+      "description": "A referenced condition absent from current state must block execution.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "condition_missing",
+      "description": "A referenced condition absent from current state must block execution.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "REQUIRED_CONDITION_MISSING:condition:data-current"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "condition_missing",
+      "description": "A referenced condition absent from current state must block execution.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "REQUIRED_CONDITION_MISSING:condition:data-current"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "condition_expired",
+      "description": "Expired evidence must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "condition_expired",
+      "description": "Expired evidence must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "CONDITION_NOT_ACTIVE:condition:data-current:expired",
+        "CONDITION_EXPIRED:condition:data-current"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "condition_expired",
+      "description": "Expired evidence must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "CONDITION_NOT_ACTIVE:condition:data-current:expired",
+        "CONDITION_EXPIRED:condition:data-current"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "condition_superseded",
+      "description": "Superseded state must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "condition_superseded",
+      "description": "Superseded state must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "CONDITION_NOT_ACTIVE:condition:data-current:superseded"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "condition_superseded",
+      "description": "Superseded state must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "CONDITION_NOT_ACTIVE:condition:data-current:superseded"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "condition_disputed",
+      "description": "Disputed state must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "condition_disputed",
+      "description": "Disputed state must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "CONDITION_NOT_ACTIVE:condition:data-current:disputed"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "condition_disputed",
+      "description": "Disputed state must not authorize a new effect.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "CONDITION_NOT_ACTIVE:condition:data-current:disputed"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "approval_required_missing",
+      "description": "A high-risk but otherwise valid proposal must pause for approval.",
+      "expectedDisposition": "require_approval",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "approval_required_missing",
+      "description": "A high-risk but otherwise valid proposal must pause for approval.",
+      "expectedDisposition": "require_approval",
+      "actualDisposition": "require_approval",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "VALID_APPROVAL_REQUIRED"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "approval_required_missing",
+      "description": "A high-risk but otherwise valid proposal must pause for approval.",
+      "expectedDisposition": "require_approval",
+      "actualDisposition": "require_approval",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "VALID_APPROVAL_REQUIRED"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "approval_required_present",
+      "description": "A proposal-scoped valid approval should allow the high-risk action.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": true,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "approval_required_present",
+      "description": "A proposal-scoped valid approval should allow the high-risk action.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": true,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "AUTHORIZED_WITHIN_CONTRACT"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "approval_required_present",
+      "description": "A proposal-scoped valid approval should allow the high-risk action.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": true,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "AUTHORIZED_WITHIN_CONTRACT"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "intent_risk_budget_exceeded",
+      "description": "Approval cannot expand the risk budget declared by the intent.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "intent_risk_budget_exceeded",
+      "description": "Approval cannot expand the risk budget declared by the intent.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "INTENT_RISK_BUDGET_EXCEEDED"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "intent_risk_budget_exceeded",
+      "description": "Approval cannot expand the risk budget declared by the intent.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "INTENT_RISK_BUDGET_EXCEEDED"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "false_success",
+      "description": "A successful tool return without the requested state change must not count as completion.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "false_success",
+      "description": "A successful tool return without the requested state change must not count as completion.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "AUTHORIZED_WITHIN_CONTRACT"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "false_success",
+      "description": "A successful tool return without the requested state change must not count as completion.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "AUTHORIZED_WITHIN_CONTRACT"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "execution_failure",
+      "description": "A failed capability execution must not count as completion.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "execution_failure",
+      "description": "A failed capability execution must not count as completion.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "AUTHORIZED_WITHIN_CONTRACT"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "execution_failure",
+      "description": "A failed capability execution must not count as completion.",
+      "expectedDisposition": "allow",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "AUTHORIZED_WITHIN_CONTRACT"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "expired_approval",
+      "description": "An expired approval must not authorize a high-risk action.",
+      "expectedDisposition": "require_approval",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "expired_approval",
+      "description": "An expired approval must not authorize a high-risk action.",
+      "expectedDisposition": "require_approval",
+      "actualDisposition": "require_approval",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "VALID_APPROVAL_REQUIRED"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "expired_approval",
+      "description": "An expired approval must not authorize a high-risk action.",
+      "expectedDisposition": "require_approval",
+      "actualDisposition": "require_approval",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "VALID_APPROVAL_REQUIRED"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "principal_outside_contract",
+      "description": "A principal outside the intent contract must not receive authority.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "principal_outside_contract",
+      "description": "A principal outside the intent contract must not receive authority.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "PRINCIPAL_NOT_AUTHORIZED"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "principal_outside_contract",
+      "description": "A principal outside the intent contract must not receive authority.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "PRINCIPAL_NOT_AUTHORIZED"
+      ]
+    },
+    {
+      "condition": "reachable_only",
+      "scenarioId": "capability_target_mismatch",
+      "description": "The intent and capability must both authorize the exact target shape.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "allow",
+      "expectedCompletion": false,
+      "executed": true,
+      "claimedSuccess": true,
+      "actualStateAchieved": true,
+      "ledgerIntegrity": null,
+      "reasonCodes": [
+        "CAPABILITY_REACHABILITY_TREATED_AS_AUTHORITY"
+      ]
+    },
+    {
+      "condition": "authorize_only",
+      "scenarioId": "capability_target_mismatch",
+      "description": "The intent and capability must both authorize the exact target shape.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "TARGET_UNSUPPORTED_BY_CAPABILITY"
+      ]
+    },
+    {
+      "condition": "authorize_and_verify",
+      "scenarioId": "capability_target_mismatch",
+      "description": "The intent and capability must both authorize the exact target shape.",
+      "expectedDisposition": "deny",
+      "actualDisposition": "deny",
+      "expectedCompletion": false,
+      "executed": false,
+      "claimedSuccess": false,
+      "actualStateAchieved": false,
+      "ledgerIntegrity": true,
+      "reasonCodes": [
+        "TARGET_UNSUPPORTED_BY_CAPABILITY"
+      ]
+    }
+  ],
+  "acceptance": {
+    "passed": true,
+    "criteria": {
+      "treatment_decision_accuracy_is_one": true,
+      "treatment_unauthorized_execution_is_zero": true,
+      "treatment_false_success_is_zero": true,
+      "treatment_legitimate_completion_is_one": true,
+      "treatment_approval_bypass_is_zero": true,
+      "treatment_ledger_integrity_is_one": true,
+      "authorization_ablation_blocks_unauthorized_effects": true,
+      "verification_improves_false_success": true
+    }
+  }
+}

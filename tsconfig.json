@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "target": "ES2022",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "types": ["bun"],
+    "paths": {
+      "@hyper/contracts": ["packages/contracts/src/index.ts"],
+      "@hyper/runtime": ["packages/runtime/src/index.ts"],
+      "@hyper/capability-memory": ["packages/capability-memory/src/index.ts"],
+      "@hyper/capabilities": ["packages/capabilities/src/index.ts"],
+      "@hyper/context": ["packages/context/src/index.ts"],
+      "@hyper/delegation": ["packages/delegation/src/index.ts"],
+      "@hyper/model": ["packages/model/src/index.ts"],
+      "@hyper/planning": ["packages/planning/src/index.ts"],
+      "@hyper/workflow": ["packages/workflow/src/index.ts"],
+      "@hyper/cli": ["packages/cli/src/index.ts"],
+      "@hyper/evals": ["packages/evals/src/index.ts"]
+    }
+  },
+  "include": ["packages/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["src/**", "scripts/**", "ui/**", "data/**", "test-data/**"]
+}

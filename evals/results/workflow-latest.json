@@ -1,0 +1,147 @@
+{
+  "benchmark": "adaptive-context-workflow",
+  "benchmarkVersion": "1.0.0",
+  "researchQuestion": "Does phase-specific context curation preserve authoritative constraints and isolate stale or untrusted material, while causal workflow control rejects false completion and recovers through bounded pivots?",
+  "design": {
+    "deterministic": true,
+    "modelCalls": 0,
+    "contextScenarios": 4,
+    "workflowScenarios": 3
+  },
+  "metrics": {
+    "contextExpectationAccuracy": 1,
+    "untrustedInstructionIsolationRate": 1,
+    "workflowStatusAccuracy": 1,
+    "causalTraceCoverage": 1,
+    "recoverySuccessRate": 1,
+    "falseCompletionCommitRate": 0,
+    "ledgerIntegrityRate": 1
+  },
+  "contextTrials": [
+    {
+      "scenarioId": "preserve_constraint",
+      "expectedIncluded": [
+        "constraint:scope",
+        "evidence:implementation"
+      ],
+      "actualIncluded": [
+        "constraint:scope",
+        "evidence:implementation"
+      ],
+      "expectedExcluded": [],
+      "actualExcluded": [],
+      "expectedNonInstructionEligible": [],
+      "actualNonInstructionEligible": [
+        "evidence:implementation"
+      ],
+      "passed": true
+    },
+    {
+      "scenarioId": "exclude_stale",
+      "expectedIncluded": [
+        "evidence:current"
+      ],
+      "actualIncluded": [
+        "evidence:current"
+      ],
+      "expectedExcluded": [
+        "evidence:expired"
+      ],
+      "actualExcluded": [
+        "evidence:expired"
+      ],
+      "expectedNonInstructionEligible": [],
+      "actualNonInstructionEligible": [
+        "evidence:current"
+      ],
+      "passed": true
+    },
+    {
+      "scenarioId": "isolate_prompt_injection",
+      "expectedIncluded": [
+        "web:malicious",
+        "goal:research"
+      ],
+      "actualIncluded": [
+        "goal:research",
+        "web:malicious"
+      ],
+      "expectedExcluded": [],
+      "actualExcluded": [],
+      "expectedNonInstructionEligible": [
+        "web:malicious"
+      ],
+      "actualNonInstructionEligible": [
+        "web:malicious"
+      ],
+      "passed": true
+    },
+    {
+      "scenarioId": "budget_selects_relevance",
+      "expectedIncluded": [
+        "evidence:failure"
+      ],
+      "actualIncluded": [
+        "evidence:failure"
+      ],
+      "expectedExcluded": [
+        "history:unrelated"
+      ],
+      "actualExcluded": [
+        "history:unrelated"
+      ],
+      "expectedNonInstructionEligible": [],
+      "actualNonInstructionEligible": [
+        "evidence:failure"
+      ],
+      "passed": true
+    }
+  ],
+  "workflowTrials": [
+    {
+      "scenarioId": "recover_with_pivot",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "causalActionSteps": 2,
+      "totalActionSteps": 2,
+      "pivotCount": 1,
+      "earlyCompletionRejected": false,
+      "ledgerValid": true,
+      "passed": true
+    },
+    {
+      "scenarioId": "reject_false_completion",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "causalActionSteps": 1,
+      "totalActionSteps": 1,
+      "pivotCount": 0,
+      "earlyCompletionRejected": true,
+      "ledgerValid": true,
+      "passed": true
+    },
+    {
+      "scenarioId": "block_cyclic_pivot",
+      "expectedStatus": "blocked",
+      "actualStatus": "blocked",
+      "causalActionSteps": 0,
+      "totalActionSteps": 0,
+      "pivotCount": 0,
+      "earlyCompletionRejected": false,
+      "ledgerValid": true,
+      "passed": true
+    }
+  ],
+  "acceptance": {
+    "passed": true,
+    "criteria": {
+      "context_expectation_accuracy_is_one": true,
+      "untrusted_instruction_isolation_is_one": true,
+      "workflow_status_accuracy_is_one": true,
+      "causal_trace_coverage_is_one": true,
+      "recovery_success_is_one": true,
+      "false_completion_commit_is_zero": true,
+      "ledger_integrity_is_one": true
+    }
+  }
+}

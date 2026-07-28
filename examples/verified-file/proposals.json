@@ -1,0 +1,28 @@
+[
+  {
+    "kind": "action",
+    "strategyId": "strategy:atomic-write",
+    "hypothesis": "An atomic bounded write will create the requested result.",
+    "expectedObservation": "workspace/result.txt contains Hyper-Runtime verified this result.",
+    "action": {
+      "id": "proposal:verified-file-write",
+      "intentId": "intent:verified-file-example",
+      "principalId": "agent:example",
+      "conditionIds": ["condition:workspace-available"],
+      "capabilityId": "workspace.file.write",
+      "target": "workspace/result.txt",
+      "declaredEffects": ["state.write"],
+      "risk": 1,
+      "expectedEvidence": ["result_file_observed"],
+      "idempotencyKey": "example:verified-file:write",
+      "args": {
+        "content": "Hyper-Runtime verified this result."
+      }
+    }
+  },
+  {
+    "kind": "complete",
+    "strategyId": "strategy:atomic-write",
+    "evidenceRefs": ["result_file_observed"]
+  }
+]

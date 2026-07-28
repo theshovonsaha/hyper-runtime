@@ -1,0 +1,186 @@
+import type {
+  ActionOutcome,
+  ActionProposal,
+  Approval,
+  CapabilityAdapter,
+  Condition,
+  IntentContract,
+  PolicyDecision,
+} from '@hyper/contracts';
+import { HashChainLedger } from './ledger';
+import { DeterministicPolicyEngine } from './policy';
+
+export interface GrantClaim {
+  accepted: boolean;
+  reasonCodes: string[];
+}
+
+/**
+ * Capability grants are short-lived bearer objects, so the runtime consumes
+ * each grant exactly once before invoking an adapter.
+ */
+export class OneShotGrantGuard {
+  private readonly consumed = new Set<string>();
+
+  claim(grant: { id: string; expiresAt: string }, now: string): GrantClaim {
+    const nowValue = Date.parse(now);
+    const expiryValue = Date.parse(grant.expiresAt);
+    if (!Number.isFinite(nowValue) || !Number.isFinite(expiryValue)) {
+      return { accepted: false, reasonCodes: ['GRANT_TIME_INVALID'] };
+    }
+    if (expiryValue <= nowValue) {
+      return { accepted: false, reasonCodes: ['GRANT_EXPIRED'] };
+    }
+    if (this.consumed.has(grant.id)) {
+      return { accepted: false, reasonCodes: ['GRANT_ALREADY_CONSUMED'] };
+    }
+    this.consumed.add(grant.id);
+    return { accepted: true, reasonCodes: ['GRANT_CLAIMED_ONCE'] };
+  }
+}
+
+export interface ExecuteActionInput {
+  runId: string;
+  now: string;
+  intent: IntentContract;
+  conditions: Condition[];
+  proposal: ActionProposal;
+  capability: CapabilityAdapter;
+  approval?: Approval;
+  verificationMode?: 'required' | 'trust_execution';
+}
+
+function outcomeForDecision(
+  runId: string,
+  decision: PolicyDecision,
+  ledger: HashChainLedger,
+): ActionOutcome {
+  const status = decision.disposition === 'require_approval' ? 'awaiting_approval' : 'denied';
+  const receipt = ledger.append(runId, 'action.receipt', {
+    status,
+    decisionId: decision.id,
+    executed: false,
+    claimedSuccess: false,
+  });
+  return {
+    runId,
+    status,
+    decision,
+    executed: false,
+    claimedSuccess: false,
+    receiptHash: receipt.hash,
+  };
+}
+
+export class AuthorizedRuntime {
+  private readonly grants = new OneShotGrantGuard();
+
+  constructor(
+    private readonly policy = new DeterministicPolicyEngine(),
+    readonly ledger = new HashChainLedger(),
+  ) {}
+
+  async execute(input: ExecuteActionInput): Promise<ActionOutcome> {
+    const { runId, proposal, capability } = input;
+    this.ledger.append(runId, 'action.proposed', {
+      proposalId: proposal.id,
+      intentId: proposal.intentId,
+      principalId: proposal.principalId,
+      capabilityId: proposal.capabilityId,
+      target: proposal.target,
+      effects: proposal.declaredEffects,
+      risk: proposal.risk,
+      conditionIds: proposal.conditionIds,
+    });
+
+    const decision = this.policy.decide({
+      now: input.now,
+      intent: input.intent,
+      conditions: input.conditions,
+      proposal,
+      manifest: capability.manifest,
+      approval: input.approval,
+    });
+    this.ledger.append(runId, 'policy.decided', decision as unknown as Record<string, unknown>);
+
+    if (decision.disposition !== 'allow' || !decision.grant) {
+      return outcomeForDecision(runId, decision, this.ledger);
+    }
+
+    const grantClaim = this.grants.claim(decision.grant, input.now);
+    if (!grantClaim.accepted) {
+      const rejected: PolicyDecision = {
+        id: `${decision.id}:grant-rejected`,
+        proposalId: proposal.id,
+        disposition: 'deny',
+        reasonCodes: grantClaim.reasonCodes,
+        obligations: [],
+      };
+      this.ledger.append(runId, 'capability.grant_rejected', {
+        grantId: decision.grant.id,
+        reasonCodes: grantClaim.reasonCodes,
+      });
+      return outcomeForDecision(runId, rejected, this.ledger);
+    }
+
+    this.ledger.append(runId, 'capability.granted', decision.grant as unknown as Record<string, unknown>);
+    const execution = await capability.execute(proposal, decision.grant);
+    this.ledger.append(runId, 'action.executed', {
+      success: execution.success,
+      summary: execution.summary,
+      errorCode: execution.errorCode,
+      evidence: execution.evidence,
+    });
+
+    if (!execution.success) {
+      const receipt = this.ledger.append(runId, 'action.receipt', {
+        status: 'execution_failed',
+        decisionId: decision.id,
+        executed: true,
+        claimedSuccess: false,
+      });
+      return {
+        runId,
+        status: 'execution_failed',
+        decision,
+        executed: true,
+        claimedSuccess: false,
+        execution,
+        receiptHash: receipt.hash,
+      };
+    }
+
+    const observation = await capability.observe(proposal);
+    this.ledger.append(runId, 'state.observed', observation as unknown as Record<string, unknown>);
+
+    const verification = input.verificationMode === 'trust_execution'
+      ? {
+          passed: execution.success,
+          reasonCodes: ['EXECUTION_RESULT_TRUSTED_WITHOUT_STATE_CHECK'],
+          evidence: execution.evidence,
+        }
+      : await capability.verify(proposal, execution, observation);
+
+    this.ledger.append(runId, 'action.verified', verification as unknown as Record<string, unknown>);
+    const status = verification.passed ? 'completed' : 'verification_failed';
+    const receipt = this.ledger.append(runId, 'action.receipt', {
+      status,
+      decisionId: decision.id,
+      executed: true,
+      claimedSuccess: verification.passed,
+      verification: verification.reasonCodes,
+    });
+
+    return {
+      runId,
+      status,
+      decision,
+      executed: true,
+      claimedSuccess: verification.passed,
+      execution,
+      observation,
+      verification,
+      receiptHash: receipt.hash,
+    };
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "version": "0.2.0",
+  "runId": "run:verified-file-example",
+  "intentId": "intent:verified-file-example",
+  "objective": "Write a verified result file inside the authorized workspace.",
+  "principalId": "agent:example",
+  "authorizedCapabilities": ["workspace.file.read", "workspace.file.write"],
+  "authorizedResources": ["workspace/**"],
+  "prohibitedEffects": ["state.delete", "network.request", "process.execute"],
+  "requiredEvidence": ["result_file_observed"],
+  "completionCriteria": ["workspace/result.txt contains the requested text"],
+  "riskBudget": 2,
+  "approvalAboveRisk": 3,
+  "constraints": ["Only modify workspace/result.txt."],
+  "conditions": [
+    {
+      "id": "condition:workspace-available",
+      "statement": "The example workspace is available for a bounded write.",
+      "status": "active",
+      "evidenceRefs": ["example:user-setup"],
+      "source": "example-task",
+      "observedAt": "2026-07-24T12:00:00.000Z"
+    }
+  ],
+  "sources": [
+    {
+      "id": "goal:verified-file",
+      "title": "Verified file directive",
+      "content": "Create result.txt and finish only after its contents are observed.",
+      "kind": "goal",
+      "authority": "directive",
+      "validity": "active",
+      "provenance": ["task.json"],
+      "tags": ["result"],
+      "createdAt": "2026-07-24T12:00:00.000Z",
+      "priority": 100
+    }
+  ],
+  "initialStrategyId": "strategy:atomic-write",
+  "focusTags": ["result"],
+  "tokenBudget": 1000,
+  "maxSteps": 4
+}

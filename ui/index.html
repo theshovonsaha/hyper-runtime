@@ -1,0 +1,1980 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shovs · transparent runtime</title>
+<style>
+  :root {
+    --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f0efec;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --c-model: #2a78d6; --c-context: #1baf7a; --c-gate: #eda100;
+    --c-output: #008300; --c-packet: #4a3aa7; --c-memory: #e87ba4;
+    --c-tool: #eb6834;
+    --s-good: #0ca30c; --s-warn: #fab219; --s-serious: #ec835a; --s-critical: #d03b3b;
+    --accent: var(--c-model);
+    --radius: 10px;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) { :root {
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #242422;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+    --c-model: #3987e5; --c-context: #199e70; --c-gate: #c98500;
+    --c-output: #0ca30c; --c-packet: #9085e9; --c-memory: #d55181;
+    --c-tool: #d95926;
+  }}
+  :root[data-theme="light"] {
+    --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f0efec;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --c-model: #2a78d6; --c-context: #1baf7a; --c-gate: #eda100;
+    --c-output: #008300; --c-packet: #4a3aa7; --c-memory: #e87ba4;
+    --c-tool: #eb6834;
+  }
+  :root[data-theme="dark"] {
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #242422;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+    --c-model: #3987e5; --c-context: #199e70; --c-gate: #c98500;
+    --c-output: #0ca30c; --c-packet: #9085e9; --c-memory: #d55181;
+    --c-tool: #d95926;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page); color: var(--ink);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  select, input[type=text], textarea {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--grid); border-radius: 8px; padding: 5px 8px;
+  }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  pre { white-space: pre-wrap; word-break: break-word; }
+
+  /* ---- top bar ---- */
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+    background: var(--surface); border-bottom: 1px solid var(--grid); flex: none;
+  }
+  header .brand { font-weight: 650; letter-spacing: .2px; }
+  header .brand small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  header .spacer { flex: 1; }
+  .ctl { display: flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12.5px; }
+  .toggle {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border: 1px solid var(--grid); border-radius: 999px; font-size: 12.5px;
+    color: var(--ink-2); transition: all .15s;
+  }
+  .toggle.on { border-color: var(--c-gate); color: var(--ink); background: color-mix(in srgb, var(--c-gate) 12%, var(--surface)); }
+  .toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--baseline); }
+  .toggle.on .dot { background: var(--c-gate); }
+
+  /* ---- layout ---- */
+  main { flex: 1; display: flex; min-height: 0; }
+  #chatCol { flex: 1 1 46%; display: flex; flex-direction: column; min-width: 340px; }
+  #trailCol {
+    flex: 1 1 54%; min-width: 380px; border-left: 1px solid var(--grid);
+    background: var(--surface); display: flex; flex-direction: column;
+  }
+  body.trail-hidden #trailCol { display: none; }
+
+  /* ---- chat ---- */
+  #messages { flex: 1; overflow-y: auto; padding: 18px 22px 8px; scroll-behavior: smooth; }
+  .turn { max-width: 780px; margin: 0 auto 18px; }
+  .turn.user .bubble {
+    background: var(--surface-2); border: 1px solid var(--grid);
+    border-radius: var(--radius); padding: 10px 14px; margin-left: 15%;
+  }
+  .turn .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .5px; }
+  .turn.assistant .body { padding: 2px 0; }
+  .turn .text { white-space: pre-wrap; word-break: break-word; }
+  .turn .text code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  .turn .text pre { background: var(--surface-2); border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px; margin: 8px 0; overflow-x: auto; }
+  .turn .text .md-h { font-weight: 650; margin: 12px 0 4px; font-size: 14.5px; }
+  .turn .text ul.md, .turn .text ol.md { margin: 6px 0 6px 22px; }
+  .turn .text ul.md li, .turn .text ol.md li { margin: 2px 0; }
+  .turn .text hr { border: none; border-top: 1px solid var(--grid); margin: 12px 0; }
+  .turn .text table.md { border-collapse: collapse; margin: 10px 0; font-size: 12.5px; display: block; overflow-x: auto; max-width: 100%; }
+  .turn .text table.md th, .turn .text table.md td { border: 1px solid var(--grid); padding: 5px 9px; text-align: left; vertical-align: top; }
+  .turn .text table.md th { background: var(--surface-2); font-weight: 600; }
+  .turn .text table.md tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+  .turn .text iframe.component { min-height: 120px; }
+  .turn .text > div:empty { height: 6px; }
+  /* reasoning: a clearly SEPARATE card, never part of the answer bubble */
+  .turn .reasoning { margin: 4px 0 10px; border: 1px dashed var(--grid); border-radius: 10px;
+    background: color-mix(in srgb, var(--c-gate) 6%, var(--surface)); overflow: hidden; }
+  .turn .reasoning summary { color: var(--ink-2); font-size: 12px; cursor: pointer; user-select: none;
+    padding: 6px 12px; display: flex; align-items: center; gap: 6px; font-weight: 550; list-style: none; }
+  .turn .reasoning summary::-webkit-details-marker { display: none; }
+  .turn .reasoning summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+  .turn .reasoning[open] summary::before { transform: rotate(90deg); }
+  .turn .reasoning .rct { opacity: .6; font-weight: 400; margin-left: auto; }
+  .turn .reasoning .rbody { color: var(--muted); font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+    padding: 0 12px 10px 24px; max-height: 260px; overflow-y: auto; font-family: ui-monospace, Menlo, monospace; }
+  .caret { display: inline-block; width: 7px; height: 15px; background: var(--accent); vertical-align: text-bottom; animation: blink 1s steps(1) infinite; border-radius: 2px; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* inline activity rows (codex/claude-style, expandable) */
+  .act {
+    margin: 7px 0; border: 1px solid var(--grid); border-radius: 8px;
+    background: var(--surface); overflow: hidden; font-size: 12.5px;
+  }
+  .act > .row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    color: var(--ink-2); width: 100%; text-align: left;
+  }
+  .act > .row:hover { background: var(--surface-2); }
+  .act .k { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .act .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act .meta { color: var(--muted); font-size: 11.5px; flex: none; }
+  .act .chev { color: var(--muted); flex: none; transition: transform .15s; }
+  .act.open .chev { transform: rotate(90deg); }
+  .act .detail { display: none; border-top: 1px solid var(--grid); padding: 8px 12px; background: var(--surface-2); max-height: 260px; overflow: auto; }
+  .act.open .detail { display: block; }
+  .act.failed { border-color: color-mix(in srgb, var(--s-critical) 45%, var(--grid)); }
+  .act.failed .lbl { color: var(--s-critical); }
+
+  .phase-strip { display: flex; gap: 4px; align-items: center; margin: 6px 0 2px; font-size: 11px; color: var(--muted); }
+  .phase-strip .p { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--grid); }
+  .phase-strip .p.active { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+  .phase-strip .p.done { color: var(--ink-2); background: var(--surface-2); }
+
+  .runfoot { margin-top: 6px; font-size: 11.5px; color: var(--muted); display: flex; gap: 12px; }
+  .runfoot a { color: var(--accent); cursor: pointer; text-decoration: none; }
+
+  /* ---- composer ---- */
+  #composer { flex: none; padding: 10px 22px 16px; }
+  #composerBox {
+    max-width: 780px; margin: 0 auto; background: var(--surface);
+    border: 1px solid var(--grid); border-radius: 14px; padding: 8px 10px;
+    display: flex; flex-direction: column; gap: 6px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.05);
+  }
+  #composerBox:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--grid)); }
+  #input { border: none; background: none; resize: none; outline: none; min-height: 40px; max-height: 160px; padding: 4px 6px; }
+  #composerRow { display: flex; align-items: center; gap: 8px; }
+  #send {
+    margin-left: auto; background: var(--accent); color: #fff; border-radius: 8px;
+    padding: 6px 16px; font-weight: 600; transition: opacity .15s;
+  }
+  #send:disabled { opacity: .4; cursor: default; }
+  .hint { font-size: 11px; color: var(--muted); }
+
+  /* ---- trail panel ---- */
+  #trailTabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--grid); flex: none; }
+  #trailTabs button {
+    padding: 6px 14px; border-radius: 8px 8px 0 0; color: var(--ink-2); font-size: 13px;
+    border: 1px solid transparent; border-bottom: none;
+  }
+  #trailTabs button.active { background: var(--page); border-color: var(--grid); color: var(--ink); font-weight: 600; }
+  #trailBody { flex: 1; overflow: auto; background: var(--page); }
+  .pane { display: none; padding: 14px; }
+  .pane.active { display: block; }
+
+  /* timeline */
+  .ev { display: flex; gap: 8px; padding: 5px 8px; border-radius: 8px; align-items: baseline; cursor: pointer; }
+  .ev:hover { background: var(--surface-2); }
+  .ev .t { color: var(--muted); font-size: 11px; width: 52px; flex: none; text-align: right; }
+  .ev .chip {
+    flex: none; font-size: 10.5px; padding: 1px 8px; border-radius: 999px; color: #fff;
+    min-width: 58px; text-align: center;
+  }
+  .ev .sum { font-size: 12.5px; color: var(--ink-2); word-break: break-word; }
+  .ev.sub { margin-left: 26px; }
+  .ev-detail { display: none; margin: 2px 8px 8px 70px; }
+  .ev-detail.open { display: block; }
+  .ev-detail pre { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; max-height: 300px; overflow: auto; }
+  .blob-link { font-size: 11px; color: var(--accent); }
+
+  /* graph */
+  #graphWrap { overflow: auto; }
+  #graphSvg text { font: 11px system-ui, sans-serif; fill: var(--ink); }
+  .gnode { cursor: pointer; }
+  .gnode rect { transition: filter .1s; }
+  .gnode:hover rect { filter: brightness(1.06); }
+  #nodeDetail { margin-top: 10px; }
+  #nodeDetail pre { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px; max-height: 260px; overflow: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 12px; font-size: 11.5px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  /* runs list */
+  .runrow { display: flex; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; align-items: baseline; }
+  .runrow:hover { background: var(--surface-2); }
+  .runrow .st { font-size: 10.5px; padding: 1px 8px; border-radius: 999px; color: #fff; flex: none; }
+  .runrow .msg { font-size: 12.5px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .runrow .when { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
+
+  /* ---- gate ---- */
+  #gateBar {
+    display: none; flex: none; background: color-mix(in srgb, var(--c-gate) 14%, var(--surface));
+    border-top: 2px solid var(--c-gate); padding: 10px 22px;
+  }
+  #gateBar.open { display: block; }
+  #gateInner { max-width: 780px; margin: 0 auto; }
+  #gateTitle { font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  #gateTitle .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--c-gate); animation: pulse 1.2s ease infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  #gateItems { max-height: 300px; overflow: auto; margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+  .gitem { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; }
+  .gitem > .row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12.5px; }
+  .gitem .kind { font-size: 10.5px; padding: 1px 8px; border-radius: 999px; color: #fff; flex: none; min-width: 52px; text-align: center; }
+  .gitem .title { font-weight: 550; }
+  .gitem .why { color: var(--muted); font-size: 11.5px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gitem .chars { color: var(--muted); font-size: 11px; flex: none; }
+  .gitem textarea { display: none; width: calc(100% - 20px); margin: 0 10px 10px; min-height: 70px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .gitem.open textarea { display: block; }
+  .gitem.excluded { opacity: .5; }
+  .gitem.edited { border-color: var(--c-gate); }
+  #gateActions { display: flex; gap: 10px; align-items: center; }
+  #gateActions .approve { background: var(--c-gate); color: #1a1a19; font-weight: 650; border-radius: 8px; padding: 7px 18px; }
+  #gateActions .cancel { color: var(--s-critical); }
+  #gateActions .note { color: var(--ink-2); font-size: 12px; margin-left: auto; }
+
+  /* header pill showing the active model */
+  .pill { font-size: 12px; color: var(--ink-2); background: var(--surface-2);
+    border: 1px solid var(--grid); border-radius: 999px; padding: 3px 12px; cursor: pointer;
+    max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pill:hover { border-color: var(--accent); }
+
+  /* slide-out config panel */
+  #cfgScrim { position: fixed; inset: 0; background: rgba(0,0,0,.28); opacity: 0;
+    pointer-events: none; transition: opacity .2s; z-index: 40; }
+  #cfgScrim.open { opacity: 1; pointer-events: auto; }
+  #cfgPanel { position: fixed; top: 0; right: 0; height: 100%; width: 380px; max-width: 92vw;
+    background: var(--surface); border-left: 1px solid var(--grid); z-index: 41;
+    transform: translateX(100%); transition: transform .22s ease; display: flex; flex-direction: column;
+    box-shadow: -8px 0 24px rgba(0,0,0,.12); }
+  #cfgPanel.open { transform: translateX(0); }
+  .cfg-head { display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--grid); flex: none; }
+  .cfg-body { padding: 14px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
+  .cfg-group { display: flex; flex-direction: column; gap: 8px; }
+  .cfg-label { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted);
+    font-weight: 600; border-bottom: 1px solid var(--grid); padding-bottom: 5px; }
+  .cfg-label .cfg-hint { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 6px; }
+  .cfg-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+  .cfg-row > span:first-child { width: 110px; flex: none; color: var(--muted); }
+  .cfg-row select, .cfg-row input { flex: 1; min-width: 0; }
+  .cfg-hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--baseline); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+/* ---- kv: the JSON abstraction — every payload renders as readable rows,
+   nested blocks collapse, long strings clamp; raw JSON stays one click away */
+.kv { font-size: 12px; }
+.kv .kvrow { display: flex; gap: 8px; padding: 2px 0; border-bottom: 1px dotted var(--border); align-items: baseline; }
+.kv .kvkey { color: var(--ink-muted, #888); min-width: 110px; max-width: 160px; flex: none; overflow-wrap: anywhere; }
+.kv .kvval { white-space: pre-wrap; overflow-wrap: anywhere; flex: 1; }
+.kv .kvclamp { cursor: pointer; }
+.kv details { margin: 2px 0 2px 8px; }
+.kv summary { cursor: pointer; color: var(--ink-muted, #888); }
+.kv .rawtoggle { font-size: 11px; color: var(--ink-muted, #888); cursor: pointer; text-decoration: underline; }
+/* ---- scorecard: stat tiles + single-hue bar lists (dataviz method) */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 8px 0 14px; }
+.tile { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.tile .num { font-size: 24px; font-weight: 650; letter-spacing: -0.5px; }
+.tile .cap { font-size: 11px; color: var(--ink-muted, #888); margin-top: 2px; }
+.hbar { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hbar .blabel { min-width: 110px; font-size: 12px; text-align: right; color: inherit; }
+.hbar .btrack { flex: 1; display: flex; align-items: center; gap: 8px; }
+.hbar .bfill { height: 10px; border-radius: 0 4px 4px 0; background: var(--accent); min-width: 2px; }
+.hbar .bval { font-size: 11px; color: var(--ink-muted, #888); }
+.splitbar { display: flex; height: 12px; border-radius: 4px; overflow: hidden; gap: 2px; margin: 6px 0; }
+.splitbar div { height: 100%; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">shovs <small>transparent runtime · v2</small></span>
+  <span class="pill" id="modelPill" title="active model — click to configure">…</span>
+  <span class="spacer"></span>
+  <button class="toggle" id="gateToggle" title="Pause every turn at the context gate before inference">
+    <span class="dot"></span> gate
+  </button>
+  <button class="toggle" id="autoToggle" title="Auto mode: the agent works autonomously until the task is done">
+    <span class="dot"></span> auto
+  </button>
+  <button class="toggle" id="cfgToggle" title="settings">⚙ config</button>
+  <button class="toggle" id="trailToggle">trail</button>
+  <button class="toggle" id="themeToggle" title="theme">◐</button>
+  <button class="toggle" id="newSession">＋ new</button>
+</header>
+
+<div id="cfgScrim"></div>
+<aside id="cfgPanel">
+  <div class="cfg-head"><b>Configuration</b><button id="cfgClose" class="toggle">✕</button></div>
+  <div class="cfg-body">
+    <div class="cfg-group">
+      <div class="cfg-label">Model</div>
+      <div class="cfg-row"><span>provider</span><select id="providerSel"></select></div>
+      <div class="cfg-row"><span>model</span><select id="modelSel"></select></div>
+      <input type="text" id="modelCustom" style="display:none;width:100%" placeholder="custom model id">
+      <div class="cfg-row"><span>loop</span><select id="loopMode" title="who owns plan/verify">
+        <option value="adaptive">adaptive (by capability)</option>
+        <option value="driven">model-driven (skip plan/verify)</option>
+        <option value="scaffolded">scaffolded (always plan/verify)</option>
+      </select></div>
+    </div>
+    <div class="cfg-group">
+      <div class="cfg-label">Sub-agents <span class="cfg-hint">delegate/finance workers</span></div>
+      <div class="cfg-row"><span>provider</span><select id="subProvider"><option value="">same as driver</option></select></div>
+      <div class="cfg-row"><span>model</span><input type="text" id="subModel" placeholder="same as driver"></div>
+    </div>
+    <div class="cfg-group">
+      <div class="cfg-label">Search &amp; fallback</div>
+      <div class="cfg-row"><span>web search</span><select id="searchProvider"></select></div>
+      <div class="cfg-row"><span>provider fallback</span><input type="text" id="fallbackChain" placeholder="groq, gemini, ollama"></div>
+      <div class="cfg-hint" id="searchAvail"></div>
+    </div>
+    <div class="cfg-group">
+      <div class="cfg-label">Inspection</div>
+      <div class="cfg-row"><span>trace level</span><select id="levelSel"></select></div>
+    </div>
+    <div class="cfg-group" id="cfgStatus"></div>
+  </div>
+</aside>
+
+<main>
+  <section id="chatCol">
+    <div id="messages"></div>
+    <div id="gateBar">
+      <div id="gateInner">
+        <div id="gateTitle"><span class="pulse"></span> Context gate — this is exactly what the model will see
+          <span class="hint" id="gateStats"></span></div>
+        <div id="gateItems"></div>
+        <div id="gateActions">
+          <button class="approve" id="gateApprove">Approve &amp; run</button>
+          <button class="cancel" id="gateCancel">Cancel run</button>
+          <span class="note">toggle checkboxes to exclude · click a row to edit its text</span>
+        </div>
+      </div>
+    </div>
+    <div id="composer">
+      <div id="composerBox">
+        <textarea id="input" placeholder="Message shovs…  (try: what is 23*7+11?  ·  search the web for …  ·  remember: I prefer dark roast)"></textarea>
+        <div id="attachChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        <div id="composerRow">
+          <button id="attachBtn" title="attach text files" style="color:var(--muted)">📎</button>
+          <button id="micBtn" title="voice input (whisper)" style="color:var(--muted)">🎙</button>
+          <input type="file" id="fileInput" multiple style="display:none">
+          <span class="hint" id="statusHint">ready</span>
+          <button class="hint" id="ctxLens" title="click: preview next turn's exact context (toggle gate to edit it before inference)" style="cursor:pointer"></button>
+          <button id="send">Send</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="trailCol">
+    <div id="trailTabs">
+      <button data-pane="timeline" class="active">Timeline</button>
+      <button data-pane="scorecard">Scorecard</button>
+      <button data-pane="graph">Trail graph</button>
+      <button data-pane="packet">Packet</button>
+      <button data-pane="runs">Runs</button>
+      <button data-pane="sessions">Sessions</button>
+      <button data-pane="memory">Memory</button>
+      <button data-pane="schedules">Schedules</button>
+      <button data-pane="workflows">Workflows</button>
+      <button data-pane="knowledge">Knowledge</button>
+      <button data-pane="tools">Tools &amp; Keys</button>
+    </div>
+    <div id="trailBody">
+      <div class="pane active" id="pane-timeline">
+        <div class="hint" style="margin-bottom:6px">Live, typed events for the current run. Click any row for its payload; blob refs hydrate raw payloads.</div>
+        <div class="legend" id="phaseFilter" style="margin-bottom:8px"></div>
+        <div id="timeline"></div>
+      </div>
+      <div class="pane" id="pane-scorecard">
+        <div class="hint" style="margin-bottom:6px">Intelligence performance: success, recovery, cost, and why runs fail — a deterministic projection over every recorded run.</div>
+        <div id="scorecardView"></div>
+      </div>
+      <div class="pane" id="pane-graph">
+        <div class="hint" style="margin-bottom:6px">Input explodes into context items, converges into the packet, flows through the gate and model steps, fans out to tool sub-trails, and converges into the answer + memory commit.</div>
+        <div class="legend" id="graphLegend"></div>
+        <div id="graphWrap"></div>
+        <div id="nodeDetail"></div>
+      </div>
+      <div class="pane" id="pane-packet">
+        <div class="hint" style="margin-bottom:8px">The context items assembled for the most recent turn — provenance, size, and why each was included or dropped.</div>
+        <div id="packetView"></div>
+      </div>
+      <div class="pane" id="pane-runs">
+        <div class="hint" style="margin-bottom:8px">Past runs. Click one to replay its trail.</div>
+        <div id="runsList"></div>
+      </div>
+      <div class="pane" id="pane-sessions">
+        <div class="hint" style="margin-bottom:8px">Persisted sessions. Click one to resume it with full history, memory, and synopsis.</div>
+        <div id="sessionsList"></div>
+      </div>
+      <div class="pane" id="pane-memory">
+        <div class="hint" style="margin-bottom:6px"><b>Core memory</b> — bounded durable facts the agent retrieves only when relevant. Editable.</div>
+        <textarea id="coreMemory" style="width:100%;min-height:80px;margin-bottom:6px;font-size:12.5px"></textarea>
+        <div style="display:flex;gap:6px;margin-bottom:14px"><button id="coreSave" class="approve" style="background:var(--accent);color:#fff;border-radius:8px;padding:5px 12px">Save core memory</button><span class="hint" id="coreChars"></span></div>
+        <div class="hint" style="margin-bottom:8px"><b>Notes</b> (recall tier) — searchable memory. Delete anything wrong.</div>
+        <div class="legend" id="memoryFilter" style="margin-bottom:8px"></div>
+        <div id="memoryList"></div>
+      </div>
+      <div class="pane" id="pane-schedules">
+        <div class="hint" style="margin-bottom:8px">Recurring background runs. Each fires on the same kernel and leaves a full trail.</div>
+        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+          <input type="text" id="schedMsg" placeholder="prompt to run on a schedule" style="flex:1;min-width:180px">
+          <select id="schedEvery">
+            <option value="3600">hourly</option>
+            <option value="21600">every 6h</option>
+            <option value="86400">daily</option>
+            <option value="300">every 5 min</option>
+          </select>
+          <button id="schedAdd" class="approve" style="background:var(--accent);color:#fff;border-radius:8px;padding:6px 14px">Schedule</button>
+        </div>
+        <div id="schedulesList"></div>
+      </div>
+      <div class="pane" id="pane-workflows">
+        <div class="hint" style="margin-bottom:8px">Save a working prompt as a reusable API endpoint. Use <code>{arg}</code> placeholders — external apps POST those args and get the output. Right-click a chat message → nothing yet; paste the prompt here.</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+          <input type="text" id="wfTitle" placeholder="title (e.g. Image Analyzer)">
+          <textarea id="wfPrompt" placeholder="prompt template, e.g. Analyze the image at {image_url} and list objects" style="min-height:60px"></textarea>
+          <div style="display:flex;gap:6px">
+            <span class="hint" id="wfArgs" style="flex:1"></span>
+            <button id="wfSave" class="approve" style="background:var(--accent);color:#fff;border-radius:8px;padding:6px 14px">Save workflow</button>
+          </div>
+        </div>
+        <div id="workflowsList"></div>
+      </div>
+      <div class="pane" id="pane-knowledge">
+        <div class="hint" style="margin-bottom:6px"><b>Soul</b> — always-loaded markdown identity/behavior (like SOUL.md). Shapes how the agent acts.</div>
+        <textarea id="soulEditor" style="width:100%;min-height:120px;font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-bottom:6px"></textarea>
+        <div style="margin-bottom:16px"><button id="soulSave" class="approve" style="background:var(--accent);color:#fff;border-radius:8px;padding:5px 12px">Save soul</button></div>
+        <div class="hint" style="margin-bottom:6px"><b>Wiki</b> — the agent's linked knowledge (markdown pages, <code>[[wikilinks]]</code>). It writes here; you can read/edit.</div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <select id="wikiSelect" style="flex:1"></select>
+          <input type="text" id="wikiNew" placeholder="new page title" style="width:150px">
+          <button id="wikiOpen" style="border:1px solid var(--grid);border-radius:8px;padding:5px 10px">Open</button>
+        </div>
+        <textarea id="wikiEditor" style="width:100%;min-height:140px;font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-bottom:6px" placeholder="select or create a page…"></textarea>
+        <div style="display:flex;gap:6px"><button id="wikiSave" class="approve" style="background:var(--accent);color:#fff;border-radius:8px;padding:5px 12px">Save page</button><span class="hint" id="wikiLinks"></span></div>
+      </div>
+      <div class="pane" id="pane-tools">
+        <div class="hint" style="margin-bottom:6px"><b>API keys</b> — encrypted at rest, referenced by tools as <code>{cred:NAME}</code>. Add <code>TELEGRAM_BOT_TOKEN</code> to switch on the Telegram bot.</div>
+        <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+          <input type="text" id="credName" placeholder="NAME" style="width:150px">
+          <input type="password" id="credValue" placeholder="value (encrypted)" style="flex:1;min-width:140px">
+          <button id="credAdd" class="approve" style="background:var(--accent);color:#fff;border-radius:8px;padding:6px 12px">Add key</button>
+        </div>
+        <div id="credList" style="margin-bottom:14px"></div>
+        <div class="hint" style="margin-bottom:6px"><b>Custom HTTP tools</b> — declarative tools the agent can also author itself. <code>{arg}</code> = model input, <code>{cred:NAME}</code> = your key.</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
+          <div style="display:flex;gap:6px">
+            <input type="text" id="ctName" placeholder="tool_name" style="width:150px">
+            <select id="ctMethod" style="width:90px"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option></select>
+            <input type="text" id="ctUrl" placeholder="https://api.example.com/{arg}" style="flex:1">
+          </div>
+          <input type="text" id="ctDesc" placeholder="what it does (the model reads this)">
+          <div style="display:flex;gap:6px">
+            <input type="text" id="ctHeaders" placeholder='headers JSON e.g. {"Authorization":"Bearer {cred:MY_KEY}"}' style="flex:1">
+            <button id="ctAdd" class="approve" style="background:var(--accent);color:#fff;border-radius:8px;padding:6px 12px">Add tool</button>
+          </div>
+        </div>
+        <div id="customToolsList" style="margin-bottom:14px"></div>
+        <div class="hint" style="margin-bottom:6px"><b>Channels</b></div>
+        <div id="channelsList"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (s, el=document) => el.querySelector(s);
+const $$ = (s, el=document) => [...el.querySelectorAll(s)];
+
+const KIND_COLOR = {
+  input: "var(--baseline)", context_item: "var(--c-context)", packet: "var(--c-packet)",
+  gate: "var(--c-gate)", plan: "var(--c-packet)", model: "var(--c-model)",
+  tool: "var(--c-tool)", verify: "var(--c-gate)",
+  output: "var(--c-output)", memory: "var(--c-memory)", error: "var(--s-critical)",
+};
+const PHASE_COLOR = {
+  intake: "var(--baseline)", context: "var(--c-context)", gate: "var(--c-gate)",
+  plan: "var(--c-packet)", model: "var(--c-model)", tool: "var(--c-tool)",
+  verify: "var(--c-gate)", respond: "var(--c-output)",
+  commit: "var(--c-memory)", done: "var(--baseline)",
+};
+const PHASES = ["intake","context","gate","plan","model","tool","verify","respond","commit","done"];
+
+const state = {
+  sessionId: localStorage.getItem("shovs_session") || null,
+  runId: null, running: false, gateOn: localStorage.getItem("shovs_gate") === "1",
+  autoOn: localStorage.getItem("shovs_auto") === "1",
+  level: localStorage.getItem("shovs_level") || "debug",
+  provider: null, events: [], runStart: 0, currentTurn: null, textSeg: null,
+  lastTrailRun: null,
+};
+
+/* ---------- boot ---------- */
+async function boot() {
+  const cfg = await (await fetch("/api/config")).json();
+  const provSel = $("#providerSel");
+  for (const [name, ok] of Object.entries(cfg.providers_available)) {
+    const opt = document.createElement("option");
+    opt.value = name; opt.textContent = name + (ok ? "" : " (no key)"); opt.disabled = !ok;
+    provSel.appendChild(opt);
+  }
+  provSel.value = cfg.provider; state.provider = cfg.provider;
+  state.models = cfg.models || {};
+  provSel.onchange = () => {
+    state.provider = provSel.value;
+    loadModelList(state.provider);
+    postSettings({ provider: state.provider });
+  };
+  loadModelList(cfg.provider);
+
+  const lvlSel = $("#levelSel");
+  for (const l of cfg.levels) {
+    const opt = document.createElement("option");
+    opt.value = l; opt.textContent = l; lvlSel.appendChild(opt);
+  }
+  lvlSel.value = state.level;
+  lvlSel.onchange = () => { state.level = lvlSel.value; localStorage.setItem("shovs_level", state.level); };
+
+  // config panel: loop mode, sub-agent, search + fallback
+  $("#loopMode").value = cfg.loop_mode || "adaptive";
+  $("#loopMode").onchange = () => postSettings({ loop_mode: $("#loopMode").value });
+  const subP = $("#subProvider");
+  for (const [name, ok] of Object.entries(cfg.providers_available)) {
+    if (!ok) continue;
+    const o = document.createElement("option"); o.value = name; o.textContent = name; subP.appendChild(o);
+  }
+  subP.value = (cfg.sub_agent || {}).provider || "";
+  $("#subModel").value = (cfg.sub_agent || {}).model || "";
+  subP.onchange = () => postSettings({ sub_agent_provider: subP.value });
+  $("#subModel").onchange = () => postSettings({ sub_agent_model: $("#subModel").value });
+  const searchSel = $("#searchProvider");
+  const avail = (cfg.search || {}).available || [];
+  searchSel.innerHTML = `<option value="">auto (${avail.join(" → ") || "none configured"})</option>`
+    + avail.map(s => `<option value="${s}">${s}</option>`).join("");
+  searchSel.value = (cfg.search || {}).selected || "";
+  searchSel.onchange = () => postSettings({ search_provider: searchSel.value });
+  $("#searchAvail").textContent = avail.length
+    ? `configured: ${avail.join(", ")}` : "no web search configured (add TAVILY_API_KEY / BRAVE_SEARCH_KEY / SEARXNG_URL, or use the exa MCP)";
+  $("#fallbackChain").value = (cfg.fallback_chain || []).join(", ");
+  $("#fallbackChain").onchange = () => postSettings({ fallback_chain: $("#fallbackChain").value });
+
+  $("#gateToggle").classList.toggle("on", state.gateOn);
+  $("#autoToggle").classList.toggle("on", state.autoOn);
+  $("#ctxLens").textContent = "ctx lens";
+  updateModelPill();
+  if (state.sessionId) loadHistory();
+  refreshRuns();
+}
+boot();
+
+async function postSettings(patch) {
+  try {
+    const r = await (await fetch("/api/settings", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify(patch) })).json();
+    $("#cfgStatus").textContent = "✓ saved";
+    setTimeout(() => $("#cfgStatus").textContent = "", 1500);
+  } catch (e) {}
+}
+function updateModelPill() {
+  const model = modelValue() || (state.models[state.provider] || "default");
+  $("#modelPill").textContent = `${state.provider} · ${model}`;
+}
+
+/* ---------- config panel open/close ---------- */
+function openCfg(o) {
+  $("#cfgPanel").classList.toggle("open", o);
+  $("#cfgScrim").classList.toggle("open", o);
+}
+$("#cfgToggle").onclick = () => openCfg(!$("#cfgPanel").classList.contains("open"));
+$("#modelPill").onclick = () => openCfg(true);
+$("#cfgClose").onclick = () => openCfg(false);
+$("#cfgScrim").onclick = () => openCfg(false);
+
+/* ---------- header controls ---------- */
+$("#gateToggle").onclick = () => {
+  state.gateOn = !state.gateOn;
+  localStorage.setItem("shovs_gate", state.gateOn ? "1" : "0");
+  $("#gateToggle").classList.toggle("on", state.gateOn);
+};
+$("#autoToggle").onclick = () => {
+  state.autoOn = !state.autoOn;
+  localStorage.setItem("shovs_auto", state.autoOn ? "1" : "0");
+  $("#autoToggle").classList.toggle("on", state.autoOn);
+};
+$("#trailToggle").onclick = () => document.body.classList.toggle("trail-hidden");
+$("#themeToggle").onclick = () => {
+  const cur = document.documentElement.dataset.theme ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.dataset.theme = cur === "dark" ? "light" : "dark";
+};
+$("#newSession").onclick = () => {
+  state.sessionId = null; localStorage.removeItem("shovs_session");
+  $("#messages").innerHTML = ""; $("#timeline").innerHTML = "";
+  $("#packetView").innerHTML = ""; $("#graphWrap").innerHTML = "";
+};
+$$("#trailTabs button").forEach(b => b.onclick = () => {
+  $$("#trailTabs button").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $$(".pane").forEach(p => p.classList.remove("active"));
+  $("#pane-" + b.dataset.pane).classList.add("active");
+  if (b.dataset.pane === "runs") refreshRuns();
+  if (b.dataset.pane === "sessions") refreshSessions();
+  if (b.dataset.pane === "memory") refreshMemory();
+  if (b.dataset.pane === "schedules") refreshSchedules();
+  if (b.dataset.pane === "workflows") refreshWorkflows();
+  if (b.dataset.pane === "knowledge") refreshKnowledge();
+  if (b.dataset.pane === "scorecard") refreshScorecard();
+  if (b.dataset.pane === "tools") refreshTools();
+});
+
+/* ---------- chat history ---------- */
+async function loadHistory() {
+  try {
+    const data = await (await fetch(`/api/sessions/${state.sessionId}/messages`)).json();
+    for (const m of data.messages) {
+      if (m.role === "user") { addUserTurn(m.content); continue; }
+      const t = addAssistantTurn();
+      $(".phase-strip", t).style.display = "none"; // historical turn
+      // rebuild the inline activity rows (plan/tool/verify) from the persisted trail
+      if (m.run_id) await replayActivity(t, m.run_id);
+      appendText(t, m.content); finishTurn(t, m.content);
+      if (m.run_id) {
+        const foot = $(".runfoot", t);
+        foot.innerHTML = `<a data-act="trail">view trail →</a>`;
+        $("a", foot).onclick = () => showTrail(m.run_id);
+      }
+    }
+  } catch (e) { /* fresh session */ }
+}
+
+async function replayActivity(turn, runId) {
+  // reconstruct tool calls / plan / verify / memory from the on-disk event log,
+  // so resumed sessions show the full picture, not just the answer text
+  let events;
+  try {
+    events = (await (await fetch(`/api/runs/${runId}/events?level=debug`)).json()).events || [];
+  } catch (e) { return; }
+  const calls = {};
+  for (const ev of events) {
+    const p = ev.payload || {};
+    switch (ev.type) {
+      case "plan.created":
+        addActivity(turn, "plan", ev.summary || "plan", "", p); break;
+      case "loop.continue":
+        addActivity(turn, "plan", "↻ " + (ev.summary || "continuing"), "", p); break;
+      case "verify.verdict":
+        addActivity(turn, "verify", ev.summary || "verifier", "", p); break;
+      case "tool.call":
+        calls[p.id] = addActivity(turn, "tool", ev.summary || "tool", "", p); break;
+      case "tool.result": {
+        const act = calls[p.id];
+        if (act) {
+          $(".meta", act).textContent = p.ok === false ? "failed" : "ok";
+          setActDetail(act, p.content || p.error || ev.summary || "");
+          if (p.ok === false) act.classList.add("failed");
+        }
+        break;
+      }
+      case "memory.commit":
+        addActivity(turn, "memory", ev.summary || "memory committed", p.policy || "", p); break;
+    }
+  }
+  state.textSeg = null; // answer starts a fresh segment below the replayed rows
+}
+
+/* ---------- turn rendering ---------- */
+function addUserTurn(text) {
+  const el = document.createElement("div");
+  el.className = "turn user";
+  el.innerHTML = `<div class="bubble"><div class="who">you</div><div class="text"></div></div>`;
+  $(".text", el).textContent = text;
+  $("#messages").appendChild(el); scrollChat();
+  return el;
+}
+function addAssistantTurn() {
+  const el = document.createElement("div");
+  el.className = "turn assistant";
+  el.innerHTML = `<div class="who">shovs</div>
+    <div class="phase-strip"></div><div class="body"></div><div class="runfoot"></div>`;
+  const strip = $(".phase-strip", el);
+  for (const p of PHASES) {
+    const s = document.createElement("span"); s.className = "p"; s.dataset.phase = p; s.textContent = p;
+    strip.appendChild(s);
+  }
+  $("#messages").appendChild(el); scrollChat();
+  return el;
+}
+function setPhase(turn, phase) {
+  $$(".p", turn).forEach(p => {
+    if (p.dataset.phase === phase) p.classList.add("active");
+    else if (p.classList.contains("active")) { p.classList.remove("active"); p.classList.add("done"); }
+  });
+}
+function newTextSeg(turn) {
+  const seg = document.createElement("div");
+  seg.className = "text";
+  seg.innerHTML = `<span class="stream"></span><span class="caret"></span>`;
+  $(".body", turn).appendChild(seg);
+  return seg;
+}
+function appendText(turn, text) {
+  if (!state.textSeg || state.textSeg.parentElement !== $(".body", turn)) state.textSeg = newTextSeg(turn);
+  $(".stream", state.textSeg).textContent += text;
+  scrollChat();
+}
+function appendReasoning(turn, text) {
+  // reasoning (Qwen3/DeepSeek-R1 <think>) lives in its OWN card, ALWAYS above and
+  // separate from the answer bubble — it is the model's private thinking, not the reply
+  let box = turn._reasoning;
+  if (!box) {
+    box = document.createElement("details");
+    box.className = "reasoning"; box.open = true;
+    box.innerHTML = `<summary>💭 <span class="rlabel">thinking…</span><span class="rct"></span></summary><div class="rbody"></div>`;
+    // insert at the TOP of the turn body, before any answer segment
+    $(".body", turn).insertBefore(box, $(".body", turn).firstChild);
+    turn._reasoning = box;
+    turn._reasonStart = Date.now();
+  }
+  const b = $(".rbody", box);
+  b.textContent += text;
+  b.scrollTop = b.scrollHeight;
+  $(".rct", box).textContent = `${b.textContent.length} chars`;
+  scrollChat();
+}
+function finishTurn(turn, finalText) {
+  $$(".caret", turn).forEach(c => c.remove());
+  if (turn._reasoning) {                                  // collapse once the answer lands
+    turn._reasoning.open = false;
+    const secs = ((Date.now() - (turn._reasonStart || Date.now())) / 1000).toFixed(1);
+    $(".rlabel", turn._reasoning).textContent = `reasoning · ${secs}s`;
+  }
+  if (finalText !== undefined && state.textSeg) {
+    $(".stream", state.textSeg).innerHTML = md(finalText); // authoritative final
+  }
+  state.textSeg = null;
+}
+
+/* inline spans: escape first, then apply safe formatting */
+function mdInline(text) {
+  return esc(text)
+    .replace(/!\[([^\]]*)\]\((\/api\/generated\/[\w.\-]+|https?:[^)\s]+)\)/g,
+             `<img src="$2" alt="$1" style="max-width:100%;border-radius:10px;margin:6px 0">`)
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|\s)\*([^*\n]+)\*(?=\s|$)/g, "$1<i>$2</i>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+             `<a href="$2" target="_blank" rel="noopener">$1</a>`);
+}
+function mdTableRow(line) {
+  return line.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+}
+/* block markdown: fenced code, ```html sandboxed components, GFM tables,
+   headings, lists, paragraphs. Escapes everything not explicitly formatted. */
+function md(text) {
+  const lines = String(text ?? "").replace(/IMAGE_GENERATED:\s*(\/api\/generated\/[\w.\-]+)/g,
+    "![generated image]($1)").split("\n");
+  const out = [];
+  let i = 0, list = null;
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = line.match(/^```(\w*)\s*$/);
+    if (fence) {
+      closeList();
+      const lang = (fence[1] || "").toLowerCase(); const body = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) body.push(lines[i++]);
+      i++;
+      const code = body.join("\n");
+      if (lang === "html" || lang === "component") {
+        // agent-authored HTML/CSS component: isolate in a sandboxed iframe
+        const id = "cmp_" + Math.random().toString(36).slice(2, 8);
+        out.push(`<iframe class="component" id="${id}" sandbox="allow-scripts"
+          srcdoc="${esc(code).replace(/"/g, "&quot;")}"
+          style="width:100%;border:1px solid var(--grid);border-radius:10px;margin:8px 0;background:#fff"></iframe>`);
+      } else {
+        out.push(`<pre><code>${esc(code)}</code></pre>`);
+      }
+      continue;
+    }
+    // GFM table: header row + separator row of ---
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length &&
+        /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+      closeList();
+      const header = mdTableRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(mdTableRow(lines[i++]));
+      out.push('<table class="md"><thead><tr>' +
+        header.map(h => `<th>${mdInline(h)}</th>`).join("") + "</tr></thead><tbody>" +
+        rows.map(r => "<tr>" + r.map(c =>
+          `<td>${mdInline(c.replace(/<br\s*\/?>/g, "\n")).replace(/\n/g, "<br>")}</td>`).join("") +
+          "</tr>").join("") + "</tbody></table>");
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) { closeList(); out.push(`<div class="md-h">${mdInline(heading[2])}</div>`); i++; continue; }
+    const olItem = line.match(/^\s*\d+\.\s+(.+)$/);
+    const ulItem = line.match(/^\s*[-*•]\s+(.+)$/);
+    if (olItem || ulItem) {
+      const want = olItem ? "ol" : "ul";
+      if (list !== want) { closeList(); out.push(`<${want} class="md">`); list = want; }
+      out.push(`<li>${mdInline((olItem || ulItem)[1])}</li>`);
+      i++; continue;
+    }
+    if (/^\s*(---|\*\*\*)\s*$/.test(line)) { closeList(); out.push("<hr>"); i++; continue; }
+    if (!line.trim()) { closeList(); out.push(""); i++; continue; }
+    closeList();
+    out.push(`<div>${mdInline(line)}</div>`);
+    i++;
+  }
+  closeList();
+  return out.join("\n");
+}
+// the JSON abstraction: ANY payload renders as readable key/value rows —
+// scalars inline, nested blocks collapsible, long strings clamped (click to
+// expand), raw JSON one click away. One component for every detail type.
+function kvRender(obj) {
+  const wrap = document.createElement("div");
+  wrap.className = "kv";
+  const CLAMP = 240;
+  const row = (key, valNode) => {
+    const r = document.createElement("div");
+    r.className = "kvrow";
+    const k = document.createElement("span"); k.className = "kvkey"; k.textContent = key;
+    const v = document.createElement("span"); v.className = "kvval";
+    v.append(valNode);
+    r.append(k, v);
+    return r;
+  };
+  const valNode = (v) => {
+    if (v === null || v === undefined) return document.createTextNode("—");
+    if (typeof v === "string") {
+      if (v.length <= CLAMP) return document.createTextNode(v);
+      const s = document.createElement("span");
+      s.className = "kvclamp"; s.title = "click to expand";
+      let open = false;
+      const render = () => { s.textContent = open ? v : v.slice(0, CLAMP) + ` … [+${v.length - CLAMP} chars]`; };
+      s.onclick = (e) => { e.stopPropagation(); open = !open; render(); };
+      render();
+      return s;
+    }
+    if (typeof v !== "object") return document.createTextNode(String(v));
+    if (Array.isArray(v) && v.every(x => x === null || typeof x !== "object"))
+      return document.createTextNode(v.length ? v.join(", ") : "[]");
+    const d = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.textContent = Array.isArray(v) ? `[${v.length} items]` : `{${Object.keys(v).length} fields}`;
+    d.append(sum);
+    const entries = Array.isArray(v) ? v.map((x, i) => [String(i), x]) : Object.entries(v);
+    for (const [k2, v2] of entries) d.append(row(k2, valNode(v2)));
+    return d;
+  };
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    for (const [k, v] of Object.entries(obj)) wrap.append(row(k, valNode(v)));
+  } else {
+    wrap.append(valNode(obj));
+  }
+  const raw = document.createElement("span");
+  raw.className = "rawtoggle"; raw.textContent = "raw json";
+  raw.onclick = (e) => {
+    e.stopPropagation();
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(obj, null, 2);
+    wrap.replaceChildren(pre);
+  };
+  wrap.append(raw);
+  return wrap;
+}
+
+// update an activity row's detail after creation (tool results stream in later):
+// objects render through the kv abstraction, plain text through a pre.
+function setActDetail(act, value) {
+  const detail = $(".detail", act);
+  if (!detail) return;
+  if (value !== null && typeof value === "object") {
+    detail.replaceChildren(kvRender(value));
+  } else {
+    const pre = document.createElement("pre");
+    pre.textContent = value == null ? "" : String(value);
+    detail.replaceChildren(pre);
+  }
+}
+
+function addActivity(turn, kind, label, meta, detailObj, failed=false) {
+  const el = document.createElement("div");
+  el.className = "act" + (failed ? " failed" : "");
+  el.innerHTML = `<button class="row">
+      <span class="k" style="background:${KIND_COLOR[kind] || "var(--baseline)"}"></span>
+      <span class="lbl"></span><span class="meta"></span><span class="chev">›</span>
+    </button><div class="detail"></div>`;
+  $(".lbl", el).textContent = label;
+  $(".meta", el).textContent = meta || "";
+  $(".detail", el).append(detailObj ? kvRender(detailObj)
+                                    : Object.assign(document.createElement("span"),
+                                                    { textContent: "(no detail)" }));
+  $(".row", el).onclick = () => el.classList.toggle("open");
+  $(".body", turn).appendChild(el);
+  state.textSeg = null; // next delta starts a fresh segment below this row
+  scrollChat();
+  return el;
+}
+function planMeta() {
+  const steps = state.planSteps || [];
+  if (!steps.length) return "";
+  const done = steps.filter(s => s.status === "done").length;
+  const skipped = steps.filter(s => s.status === "skipped").length;
+  return `${done}/${steps.length} done${skipped ? ` · ${skipped} skipped` : ""}`;
+}
+function scrollChat() {
+  const m = $("#messages"); m.scrollTop = m.scrollHeight;
+}
+
+/* ---------- live model discovery ---------- */
+function modelValue() {
+  const v = $("#modelSel").value;
+  if (v === "__custom__") return $("#modelCustom").value.trim() || null;
+  return v || null;
+}
+$("#modelSel").onchange = () => {
+  $("#modelCustom").style.display =
+    $("#modelSel").value === "__custom__" ? "" : "none";
+  updateModelPill();
+};
+$("#modelCustom").oninput = () => updateModelPill();
+async function loadModelList(provider) {
+  const sel = $("#modelSel");
+  sel.innerHTML = `<option value="">loading…</option>`;
+  const add = (value, label, title = "") => {
+    const opt = document.createElement("option");
+    opt.value = value; opt.textContent = label; if (title) opt.title = title;
+    sel.appendChild(opt);
+  };
+  let data = { models: [], error: "request failed" };
+  try { data = await (await fetch(`/api/models/${provider}`)).json(); } catch (e) {}
+  sel.innerHTML = "";
+  const fallback = state.models[provider] || "provider default";
+  const offline = !!data.error;
+  add("", `default · ${fallback}${offline ? " (service offline)" : ""}`,
+      data.error || "");
+  // loaded models first with a ● marker (LM Studio: only loaded models can run)
+  const hasLoadedFlag = (data.models || []).some(m => "loaded" in m);
+  for (const m of data.models || []) {
+    const caps = [m.free ? "FREE" : null,
+                  m.vision ? "vision" : null,
+                  m.context ? `${Math.round(m.context / 1000)}k` : null]
+      .filter(Boolean).join("·");
+    const mark = hasLoadedFlag ? (m.loaded ? "● " : "○ ") : "";
+    add(m.id, `${mark}${m.id}${caps ? " — " + caps : ""}`,
+        m.loaded === false ? "not loaded in LM Studio — select it there first" : "");
+  }
+  add("__custom__", "custom…");
+  sel.value = "";
+  $("#modelCustom").style.display = "none";
+  // reflect live service state on the provider dropdown (local servers especially)
+  const opt = [...$("#providerSel").options].find(o => o.value === provider);
+  if (opt) {
+    opt.textContent = provider + (offline ? " (offline)" :
+      (data.models || []).length ? ` (${data.models.length})` : "");
+  }
+  updateModelPill();
+}
+
+/* ---------- voice input ---------- */
+let mediaRec = null;
+$("#micBtn").onclick = async () => {
+  if (mediaRec && mediaRec.state === "recording") { mediaRec.stop(); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) { setStatus("microphone blocked"); return; }
+  const chunks = [];
+  mediaRec = new MediaRecorder(stream);
+  mediaRec.ondataavailable = e => chunks.push(e.data);
+  mediaRec.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    $("#micBtn").textContent = "🎙";
+    setStatus("transcribing…");
+    const fd = new FormData();
+    fd.append("audio", new Blob(chunks, { type: mediaRec.mimeType || "audio/webm" }), "rec.webm");
+    try {
+      const r = await fetch("/api/transcribe", { method: "POST", body: fd });
+      const j = await r.json();
+      if (j.text) $("#input").value = ($("#input").value + " " + j.text).trim();
+      setStatus(j.text ? "ready" : "no speech detected");
+    } catch (e) { setStatus("transcription failed"); }
+  };
+  mediaRec.start();
+  $("#micBtn").textContent = "⏹";
+  setStatus("recording… click ⏹ to stop");
+};
+
+/* ---------- attachments (text files + images for vision models) ---------- */
+state.attached = []; state.images = [];
+const dataUrl = f => new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); });
+$("#attachBtn").onclick = () => $("#fileInput").click();
+$("#fileInput").onchange = async e => {
+  for (const f of e.target.files) {
+    if (f.type.startsWith("image/")) {
+      if (f.size > 4 * 1024 * 1024) { alert(`${f.name} too large (4MB max for images)`); continue; }
+      state.images.push({ name: f.name, data_url: await dataUrl(f) });
+    } else {
+      if (f.size > 512 * 1024) { alert(`${f.name} is too large (512KB max)`); continue; }
+      state.attached.push({ name: f.name, text: await f.text() });
+    }
+  }
+  e.target.value = "";
+  renderChips();
+};
+function renderChips() {
+  const wrap = $("#attachChips"); wrap.innerHTML = "";
+  state.attached.forEach((f, i) => {
+    const chip = document.createElement("span");
+    chip.className = "toggle";
+    chip.innerHTML = `📄 ${esc(f.name)} <b style="cursor:pointer">✕</b>`;
+    $("b", chip).onclick = () => { state.attached.splice(i, 1); renderChips(); };
+    wrap.appendChild(chip);
+  });
+  state.images.forEach((img, i) => {
+    const chip = document.createElement("span");
+    chip.className = "toggle";
+    chip.innerHTML = `🖼 ${esc(img.name)} <b style="cursor:pointer">✕</b>`;
+    $("b", chip).onclick = () => { state.images.splice(i, 1); renderChips(); };
+    wrap.appendChild(chip);
+  });
+}
+
+/* ---------- send / SSE ---------- */
+$("#send").onclick = () => {
+  if (state.running && state.runId) {
+    fetch(`/api/runs/${state.runId}/cancel`, { method: "POST" });
+    return;
+  }
+  send();
+};
+$("#input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+async function send() {
+  const input = $("#input");
+  const message = input.value.trim();
+  if (!message || state.running) return;
+  input.value = "";
+  state.running = true;
+  $("#send").textContent = "Stop";
+  addUserTurn(message);
+  const turn = addAssistantTurn();
+  state.currentTurn = turn; state.textSeg = null;
+  state.events = []; $("#timeline").innerHTML = "";
+  state.runStart = Date.now();
+  setStatus("starting run…");
+
+  const files = state.attached; const images = state.images;
+  state.attached = []; state.images = []; renderChips();
+  const resp = await fetch("/api/chat", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      message, session_id: state.sessionId, provider: state.provider,
+      model: modelValue(),
+      gate: state.gateOn, auto: state.autoOn, level: state.level, files, images,
+    }),
+  });
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("data:")) handleFrame(JSON.parse(line.slice(5)));
+        }
+      }
+    }
+  } catch (err) {
+    addActivity(turn, "error", "stream interrupted: " + err.message, "", null, true);
+  }
+  state.running = false;
+  $("#send").textContent = "Send";
+  closeGate();
+  finishTurn(turn);
+  setStatus("ready");
+}
+
+function setStatus(text) { $("#statusHint").textContent = text; }
+
+function handleFrame(frame) {
+  if (frame.kind === "meta") {
+    state.runId = frame.run_id;
+    if (frame.session_id) { state.sessionId = frame.session_id; localStorage.setItem("shovs_session", frame.session_id); }
+    return;
+  }
+  if (frame.kind !== "event") return;
+  const ev = frame.event;
+  const turn = state.currentTurn;
+  state.events.push(ev);
+  if (ev.type !== "model.delta") addTimelineRow(ev);
+  if (ev.phase) setPhase(turn, ev.phase);
+
+  switch (ev.type) {
+    case "run.start": setStatus("run " + ev.run_id); break;
+    case "capability": {
+      const p = ev.payload || {};
+      const badges = [p.driver ? "model-driven" : "scaffolded",
+                      p.reasoning ? "reasoning" : null, p.vision ? "vision" : null]
+        .filter(Boolean).join(" · ");
+      addActivity(turn, "packet", `capability: ${badges}`, p.source || "", p);
+      break;
+    }
+    case "context.packet": {
+      const p = ev.payload || {};
+      // summary-first so it renders at ANY inspection level (payload is level-gated)
+      addActivity(turn, "packet", ev.summary || "context packet",
+        p.edited ? "edited at gate" : (p.mode ? p.mode + " mode" : ""), p);
+      const chars = p.chars ?? parseInt((ev.summary.match(/([\d]+) chars/) || [])[1] || 0);
+      const items = p.items_included ?? (ev.summary.match(/(\d+)\/\d+ items/) || [])[1];
+      $("#ctxLens").textContent =
+        `ctx: ${items ?? "?"} items · ${fmtChars(chars)} · ~${Math.round(chars / 4)} tok`;
+      renderPacketPane(state.events);
+      break;
+    }
+    case "gate.open": openGate(); setStatus("gate open — inspect the packet"); break;
+    case "plan.created": {
+      const p = ev.payload || {};
+      state.planSteps = p.steps || [];
+      state.planAct = addActivity(turn, "plan", ev.summary || "plan", planMeta(), p);
+      setStatus("planned");
+      break;
+    }
+    case "plan.update": {
+      const p = ev.payload || {};
+      if (p.steps) state.planSteps = p.steps;
+      else if (p.step_id != null) {
+        const s = (state.planSteps || []).find(x => x.id === p.step_id);
+        if (s) s.status = p.status;
+      }
+      if (state.planAct) {
+        $(".meta", state.planAct).textContent = planMeta();
+        setActDetail(state.planAct, state.planSteps);
+        if (p.partial_completion) state.planAct.classList.add("failed");
+      }
+      break;
+    }
+    case "loop.continue": {
+      addActivity(turn, "plan", "↻ " + (ev.summary || "continuing"), "", ev.payload || {});
+      setStatus("continuing autonomously…");
+      break;
+    }
+    case "verify.verdict": {
+      const p = ev.payload || {};
+      addActivity(turn, "verify", ev.summary || "verifier",
+        p.verdict === "revise" ? "revising…" : "", p);
+      break;
+    }
+    case "gate.resolved": {
+      closeGate();
+      addActivity(turn, "gate", ev.summary || "gate resolved", "", ev.payload || {});
+      setStatus("running…");
+      break;
+    }
+    case "model.request": setStatus("model thinking…"); break;
+    case "model.delta": {
+      const p = ev.payload || {};
+      if (p.channel === "reasoning") { appendReasoning(turn, p.text || ""); setStatus("💭 reasoning…"); }
+      else appendText(turn, p.text || "");
+      break;
+    }
+    case "model.response": {
+      const p = ev.payload || {};
+      if (p.tool_calls && p.tool_calls.length) state.textSeg = null;
+      break;
+    }
+    case "tool.call": {
+      // summary is "toolname({args})" — always present, even at summary level
+      ev._act = addActivity(turn, "tool", ev.summary || "tool call", "running…", ev.payload || {});
+      state._lastToolAct = ev._act;
+      setStatus("tool: " + (ev.summary || "").split("(")[0]);
+      break;
+    }
+    case "tool.stage": {
+      addActivity(turn, "tool", "  ↳ " + (ev.summary || "stage"), "", ev.payload || {});
+      break;
+    }
+    case "tool.result": {
+      const p = ev.payload || {};
+      // match to its call by id; else attach to the most recent running tool row
+      let call = state.events.find(e => e.type === "tool.call" && e.payload && e.payload.id === p.id);
+      const act = (call && call._act) || state._lastToolAct;
+      const ok = p.ok !== false && !/FAILED|ERROR/i.test(ev.summary || "");
+      if (act) {
+        const ms = p.duration_ms ?? (ev.summary.match(/(\d+)ms/) || [])[1];
+        $(".meta", act).textContent = ok ? (ms ? `ok · ${ms}ms` : "ok") : "failed";
+        // INSIGHT: show the actual result content, not raw JSON envelope
+        const content = p.content || p.error || ev.summary || "";
+        setActDetail(act, content || "(result withheld at this level — raise to debug/raw)");
+        if (!ok) act.classList.add("failed");
+      }
+      break;
+    }
+    case "respond.final": finishTurn(turn, (ev.payload || {}).text); break;
+    case "memory.commit": {
+      addActivity(turn, "memory", ev.summary || "memory committed",
+        (ev.payload || {}).policy || "", ev.payload || {});
+      break;
+    }
+    case "run.error":
+      addActivity(turn, "error", ev.summary || "run error", "", ev.payload, true);
+      break;
+    case "run.end": {
+      const p = ev.payload || {};
+      const foot = $(".runfoot", turn);
+      const usage = p.usage ? ` · ${p.usage.input_tokens}→${p.usage.output_tokens} tok` : "";
+      const speed = p.tokens_per_s ? ` · ${p.tokens_per_s} tok/s` : "";
+      const mtime = p.model_time_ms ? ` · model ${Math.round(p.model_time_ms)}ms` : "";
+      foot.innerHTML = `<span>${p.status} in ${p.duration_ms}ms${usage}${speed}${mtime}</span>
+        <a data-act="trail">view trail →</a>
+        <a data-act="up" title="good run">👍</a><a data-act="down" title="bad run">👎</a>
+        <a href="/api/runs/${ev.run_id}/otel" target="_blank" title="export OpenTelemetry GenAI spans">⤓ OTel</a>
+        <a data-act="why" title="attribution: which context shaped this answer">why?</a>
+        <a data-act="speak" title="read aloud">🔊</a>`;
+      $("a[data-act=trail]", foot).onclick = () => showTrail(ev.run_id);
+      $("a[data-act=why]", foot).onclick = (e) => showAttribution(ev.run_id, e.target);
+      $("a[data-act=speak]", foot).onclick = () => speak(turn);
+      const score = (v) => fetch(`/api/runs/${ev.run_id}/scores`, { method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "quality", value: v, source: "human" }) })
+        .then(() => setStatus(v ? "scored 👍" : "scored 👎"));
+      $("a[data-act=up]", foot).onclick = (e) => { score(1); e.target.style.opacity = 1; };
+      $("a[data-act=down]", foot).onclick = (e) => { score(0); e.target.style.opacity = 1; };
+      showTrail(ev.run_id, true);
+      break;
+    }
+  }
+}
+
+/* ---------- gate ---------- */
+async function openGate() {
+  // fetch the pending gate view (packet or tool_result, full text)
+  let packet;
+  for (let i = 0; i < 10; i++) {
+    const r = await fetch(`/api/runs/${state.runId}/gate`);
+    if (r.ok) { packet = await r.json(); break; }
+    await new Promise(res => setTimeout(res, 150));
+  }
+  if (!packet) return;
+  state.gateKind = packet.kind || "packet";
+  if (state.gateKind === "tool_result") { renderToolGate(packet); return; }
+  $("#gateTitle").childNodes[1].textContent = " Context gate — this is exactly what the model will see ";
+  const wrap = $("#gateItems"); wrap.innerHTML = "";
+  $("#gateStats").textContent = `${packet.items_included}/${packet.items_total} items · ${fmtChars(packet.chars)}`;
+  for (const item of packet.items) {
+    const el = document.createElement("div");
+    el.className = "gitem" + (item.included ? "" : " excluded");
+    el.dataset.id = item.id;
+    el.innerHTML = `<div class="row">
+        <input type="checkbox" ${item.included ? "checked" : ""} ${item.pinned ? "title='pinned: excluding this breaks the turn'" : ""}>
+        <span class="kind" style="background:${KIND_COLOR[item.kind === "user" ? "input" : item.kind === "history" ? "input" : item.kind === "system" ? "packet" : item.kind === "file" ? "tool" : item.kind] || "var(--baseline)"}">${item.kind}</span>
+        <span class="title"></span><span class="why"></span><span class="chars">${fmtChars(item.chars)}</span>
+      </div><textarea spellcheck="false"></textarea>`;
+    $(".title", el).textContent = item.title;
+    $(".why", el).textContent = item.reason;
+    const ta = $("textarea", el); ta.value = item.text || "";
+    el.dataset.original = item.text || "";
+    $("input", el).onchange = e => {
+      el.classList.toggle("excluded", !e.target.checked);
+      e.stopPropagation();
+    };
+    $(".row", el).onclick = e => {
+      if (e.target.tagName === "INPUT") return;
+      el.classList.toggle("open");
+    };
+    ta.oninput = () => el.classList.toggle("edited", ta.value !== el.dataset.original);
+    wrap.appendChild(el);
+  }
+  $("#gateBar").classList.add("open");
+}
+function renderToolGate(view) {
+  $("#gateTitle").childNodes[1].textContent = ` Tool gate — ${view.name} result, editable before the model sees it `;
+  $("#gateStats").textContent = `${view.ok ? "ok" : "FAILED"} · ${fmtChars((view.content || "").length)}`;
+  const wrap = $("#gateItems"); wrap.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "gitem open";
+  el.innerHTML = `<div class="row">
+      <span class="kind" style="background:${KIND_COLOR.tool}">tool</span>
+      <span class="title"></span><span class="why">rewrite freely — the transcript gets your version</span>
+    </div><textarea spellcheck="false" style="min-height:140px"></textarea>`;
+  $(".title", el).textContent = view.name;
+  const ta = $("textarea", el); ta.value = view.content || "";
+  el.dataset.original = view.content || "";
+  ta.oninput = () => el.classList.toggle("edited", ta.value !== el.dataset.original);
+  wrap.appendChild(el);
+  $("#gateBar").classList.add("open");
+}
+function closeGate() { $("#gateBar").classList.remove("open"); }
+$("#gateApprove").onclick = async () => {
+  if (state.gateKind === "tool_result") {
+    const ta = $("#gateItems textarea");
+    await fetch(`/api/runs/${state.runId}/gate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "approve", content: ta ? ta.value : null }),
+    });
+    closeGate();
+    return;
+  }
+  const edits = [];
+  for (const el of $$("#gateItems .gitem")) {
+    const included = $("input", el).checked;
+    const text = $("textarea", el).value;
+    const edit = { id: el.dataset.id };
+    let changed = false;
+    if (!included) { edit.included = false; changed = true; }
+    if (text !== el.dataset.original) { edit.text = text; changed = true; }
+    if (changed) edits.push(edit);
+  }
+  await fetch(`/api/runs/${state.runId}/gate`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "approve", edits }),
+  });
+  closeGate();
+};
+$("#gateCancel").onclick = async () => {
+  await fetch(`/api/runs/${state.runId}/gate`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "cancel" }),
+  });
+  closeGate();
+};
+
+/* ---------- timeline (with phase filter + sub-run navigation) ---------- */
+state.phaseHidden = new Set();
+(function buildPhaseFilter() {
+  const wrap = $("#phaseFilter");
+  for (const p of PHASES) {
+    const chip = document.createElement("span");
+    chip.className = "toggle on"; chip.style.cursor = "pointer";
+    chip.innerHTML = `<i style="width:8px;height:8px;border-radius:2px;display:inline-block;background:${PHASE_COLOR[p]}"></i>${p}`;
+    chip.onclick = () => {
+      if (state.phaseHidden.has(p)) state.phaseHidden.delete(p);
+      else state.phaseHidden.add(p);
+      chip.classList.toggle("on", !state.phaseHidden.has(p));
+      applyPhaseFilter();
+    };
+    wrap.appendChild(chip);
+  }
+})();
+function applyPhaseFilter() {
+  for (const row of $$("#timeline .ev")) {
+    const hide = state.phaseHidden.has(row.dataset.phase);
+    row.style.display = hide ? "none" : "";
+    const detail = row.nextElementSibling;
+    if (detail && detail.classList.contains("ev-detail") && hide) detail.classList.remove("open");
+  }
+}
+function addTimelineRow(ev) {
+  const tl = $("#timeline");
+  const row = document.createElement("div");
+  row.className = "ev" + (ev.parent_id ? " sub" : "");
+  row.dataset.phase = ev.phase;
+  if (state.phaseHidden.has(ev.phase)) row.style.display = "none";
+  const dt = state.runStart ? ((ev.ts * 1000 - state.runStart) / 1000).toFixed(2) + "s" : "";
+  row.innerHTML = `<span class="t">${dt}</span>
+    <span class="chip" style="background:${PHASE_COLOR[ev.phase] || "var(--baseline)"}">${ev.phase}</span>
+    <span class="sum"></span>`;
+  $(".sum", row).textContent = `${ev.type} — ${ev.summary || ""}`;
+  const detail = document.createElement("div");
+  detail.className = "ev-detail";
+  const blob = ev.blob_ref ? `<a class="blob-link" href="/api/${ev.blob_ref.replace(/^blobs\//, "blobs/")}" target="_blank">open raw payload blob ↗</a>` : "";
+  const subRun = ev.payload && ev.payload.sub_run_id;
+  detail.innerHTML = `<div class="kvslot"></div>${blob}${subRun ? ` <a class="blob-link" data-sub="${subRun}">open sub-run trail →</a>` : ""}`;
+  $(".kvslot", detail).append(kvRender(ev.payload ?? {}));
+  if (subRun) $("a[data-sub]", detail).onclick = () => showTrail(subRun);
+  row.onclick = () => detail.classList.toggle("open");
+  tl.appendChild(row); tl.appendChild(detail);
+  tl.parentElement.scrollTop = tl.parentElement.scrollHeight;
+}
+
+/* ---------- packet pane ---------- */
+function renderPacketPane(events) {
+  const items = events.filter(e => e.type === "context.item").map(e => e.payload || {});
+  const view = $("#packetView"); view.innerHTML = "";
+  for (const it of items) {
+    const el = document.createElement("div");
+    el.className = "act" + (it.included === false ? "" : "");
+    el.style.opacity = it.included === false ? ".55" : "1";
+    el.innerHTML = `<button class="row">
+        <span class="k" style="background:${KIND_COLOR.context_item}"></span>
+        <span class="lbl"></span><span class="meta"></span><span class="chev">›</span>
+      </button><div class="detail"><pre></pre></div>`;
+    $(".lbl", el).textContent = `[${it.kind}] ${it.title} — ${it.reason}`;
+    $(".meta", el).textContent = `${fmtChars(it.chars)}${it.included === false ? " · excluded" : ""}${it.edited ? " · edited" : ""}`;
+    $("pre", el).textContent = it.text || "(text preview at this level — raise level to debug/raw for full text)";
+    $(".row", el).onclick = () => el.classList.toggle("open");
+    view.appendChild(el);
+  }
+}
+
+/* ---------- trail graph ---------- */
+async function showTrail(runId, background=false) {
+  const r = await fetch(`/api/runs/${runId}/trail?level=${state.level === "off" ? "normal" : state.level}`);
+  if (!r.ok) return;
+  const trail = await r.json();
+  state.lastTrailRun = runId;
+  renderGraph(trail);
+  if (!background) {
+    $$("#trailTabs button").forEach(x => x.classList.toggle("active", x.dataset.pane === "graph"));
+    $$(".pane").forEach(p => p.classList.remove("active"));
+    $("#pane-graph").classList.add("active");
+  }
+}
+
+function renderGraph(trail) {
+  const g = trail.graph;
+  if (!g) { $("#graphWrap").innerHTML = "<div class='hint'>no graph at this level</div>"; return; }
+  // legend
+  const legend = $("#graphLegend"); legend.innerHTML = "";
+  const kinds = [...new Set(g.nodes.map(n => n.kind))];
+  for (const k of kinds) {
+    const s = document.createElement("span");
+    s.innerHTML = `<i style="background:${KIND_COLOR[k] || "var(--baseline)"}"></i>${k.replace("_", " ")}`;
+    legend.appendChild(s);
+  }
+  // layered layout by topological depth
+  const depth = {}; const incoming = {};
+  for (const e of g.edges) (incoming[e.to] = incoming[e.to] || []).push(e.from);
+  const nodeIds = new Set(g.nodes.map(n => n.id));
+  for (let pass = 0; pass < 12; pass++) {
+    let changed = false;
+    for (const n of g.nodes) {
+      const preds = (incoming[n.id] || []).filter(p => nodeIds.has(p));
+      const d = preds.length ? Math.max(...preds.map(p => depth[p] ?? 0)) + 1 : 0;
+      if (depth[n.id] !== d) { depth[n.id] = d; changed = true; }
+    }
+    if (!changed) break;
+  }
+  const cols = {};
+  for (const n of g.nodes) (cols[depth[n.id]] = cols[depth[n.id]] || []).push(n);
+  const NW = 158, NH = 38, CW = 210, RH = 52, PAD = 20;
+  const maxRows = Math.max(...Object.values(cols).map(c => c.length));
+  const width = (Math.max(...Object.keys(cols).map(Number)) + 1) * CW + PAD;
+  const height = Math.max(maxRows * RH + PAD * 2, 240);
+  const pos = {};
+  for (const [d, ns] of Object.entries(cols)) {
+    const colH = ns.length * RH;
+    ns.forEach((n, i) => {
+      pos[n.id] = { x: PAD + d * CW, y: (height - colH) / 2 + i * RH + 6 };
+    });
+  }
+  let svg = `<svg id="graphSvg" width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">`;
+  svg += `<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="var(--baseline)"/></marker></defs>`;
+  for (const e of g.edges) {
+    const a = pos[e.from], b = pos[e.to];
+    if (!a || !b) continue;
+    const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2;
+    const mx = (x1 + x2) / 2;
+    svg += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"
+      fill="none" stroke="var(--grid)" stroke-width="1.5" marker-end="url(#arr)"/>`;
+  }
+  for (const n of g.nodes) {
+    const p = pos[n.id];
+    const color = n.status === "failed" ? "var(--s-critical)" : (KIND_COLOR[n.kind] || "var(--baseline)");
+    const dash = n.status === "excluded" ? `stroke-dasharray="4 3" opacity="0.55"` : "";
+    svg += `<g class="gnode" data-id="${n.id}" transform="translate(${p.x},${p.y})">
+      <rect width="${NW}" height="${NH}" rx="8" fill="var(--surface)" stroke="${color}" stroke-width="1.5" ${dash}/>
+      <rect width="4" height="${NH}" rx="2" fill="${color}" ${dash}/>
+      <text x="12" y="${NH / 2 + 4}">${esc(short(n.label, 22))}</text>
+    </g>`;
+  }
+  svg += `</svg>`;
+  $("#graphWrap").innerHTML = svg;
+  const byId = Object.fromEntries(g.nodes.map(n => [n.id, n]));
+  $$(".gnode").forEach(el => el.onclick = () => {
+    const n = byId[el.dataset.id];
+    $("#nodeDetail").innerHTML = `<div class="hint"></div>`;
+    $("#nodeDetail .hint").textContent = `${n.kind} · ${n.status} · ${n.label}`;
+    $("#nodeDetail").append(kvRender(n.detail ?? {}));
+  });
+}
+
+/* ---------- runs pane ---------- */
+async function refreshRuns() {
+  const data = await (await fetch("/api/runs")).json();
+  const list = $("#runsList"); list.innerHTML = "";
+  const stColor = { complete: "var(--s-good)", failed: "var(--s-critical)",
+                    cancelled: "var(--s-serious)", running: "var(--c-model)" };
+  for (const run of data.runs) {
+    const isSub = (run.session_id || "").endsWith(".sub");
+    const el = document.createElement("div");
+    el.className = "runrow";
+    if (isSub) el.style.opacity = ".6";
+    el.innerHTML = `<span class="st" style="background:${stColor[run.status] || "var(--baseline)"}">${run.status}</span>
+      <span class="msg"></span><span class="when">${new Date(run.started_ts * 1000).toLocaleTimeString()}</span>`;
+    $(".msg", el).textContent = (isSub ? "└ sub · " : "") + run.user_message;
+    el.onclick = () => showTrail(run.id);
+    list.appendChild(el);
+  }
+}
+
+/* ---------- context lens: dry-run preview of the NEXT packet ---------- */
+$("#ctxLens").onclick = async () => {
+  if (!state.sessionId || state.running) return;
+  const msg = encodeURIComponent($("#input").value.trim());
+  const r = await fetch(`/api/sessions/${state.sessionId}/context_preview?message=${msg}`);
+  if (!r.ok) return;
+  const packet = await r.json();
+  const view = $("#packetView"); view.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "hint"; head.style.marginBottom = "8px";
+  head.textContent = `PREVIEW of the next turn: ${packet.items_included}/${packet.items_total} items · ${fmtChars(packet.chars)} — turn the gate on to edit these before inference`;
+  view.appendChild(head);
+  for (const it of packet.items) {
+    const el = document.createElement("div");
+    el.className = "act";
+    el.style.opacity = it.included === false ? ".55" : "1";
+    el.innerHTML = `<button class="row">
+        <span class="k" style="background:${KIND_COLOR.context_item}"></span>
+        <span class="lbl"></span><span class="meta"></span><span class="chev">›</span>
+      </button><div class="detail"><pre></pre></div>`;
+    $(".lbl", el).textContent = `[${it.kind}] ${it.title} — ${it.reason}`;
+    $(".meta", el).textContent = fmtChars(it.chars) + (it.included === false ? " · dropped" : "");
+    $("pre", el).textContent = it.text || "";
+    $(".row", el).onclick = () => el.classList.toggle("open");
+    view.appendChild(el);
+  }
+  $$("#trailTabs button").forEach(x => x.classList.toggle("active", x.dataset.pane === "packet"));
+  $$(".pane").forEach(p => p.classList.remove("active"));
+  $("#pane-packet").classList.add("active");
+  document.body.classList.remove("trail-hidden");
+};
+
+/* ---------- sessions pane ---------- */
+async function refreshSessions() {
+  const data = await (await fetch("/api/sessions")).json();
+  const list = $("#sessionsList"); list.innerHTML = "";
+  for (const s of data.sessions) {
+    if (s.id.endsWith(".sub")) continue; // sub-agent scratch sessions
+    const el = document.createElement("div");
+    el.className = "runrow";
+    const current = s.id === state.sessionId;
+    el.innerHTML = `<span class="st" style="background:${current ? "var(--c-model)" : "var(--baseline)"}">${current ? "current" : "resume"}</span>
+      <span class="msg"></span>
+      <span class="when">${s.message_count} msg · ${new Date(s.created_ts * 1000).toLocaleDateString()}</span>`;
+    $(".msg", el).textContent = s.title || s.id;
+    el.onclick = () => {
+      state.sessionId = s.id;
+      localStorage.setItem("shovs_session", s.id);
+      $("#messages").innerHTML = ""; $("#timeline").innerHTML = "";
+      $("#ctxLens").textContent = "";
+      loadHistory();
+    };
+    list.appendChild(el);
+  }
+}
+
+/* ---------- memory management ---------- */
+state.memKind = "";
+async function refreshMemory() {
+  // core memory (durable, relevance-retrieved tier)
+  const ct = $("#coreMemory");
+  if (state.sessionId) {
+    try {
+      const cm = await (await fetch(`/api/sessions/${state.sessionId}/core_memory`)).json();
+      ct.value = cm.content || "";
+      $("#coreChars").textContent = `${(cm.content || "").length}/1600 chars`;
+    } catch (e) {}
+  } else { ct.value = ""; ct.placeholder = "start a session first"; }
+  const q = new URLSearchParams();
+  if (state.sessionId) q.set("session_id", state.sessionId);
+  if (state.memKind) q.set("kind", state.memKind);
+  const data = await (await fetch("/api/memory?" + q)).json();
+  const filter = $("#memoryFilter"); filter.innerHTML = "";
+  const counts = data.counts || {};
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const mkChip = (kind, label, n) => {
+    const chip = document.createElement("span");
+    chip.className = "toggle" + (state.memKind === kind ? " on" : "");
+    chip.style.cursor = "pointer";
+    chip.textContent = `${label} ${n}`;
+    chip.onclick = () => { state.memKind = kind; refreshMemory(); };
+    filter.appendChild(chip);
+  };
+  mkChip("", "all", total);
+  for (const [k, n] of Object.entries(counts)) mkChip(k, k, n);
+
+  const list = $("#memoryList"); list.innerHTML = "";
+  if (!(data.notes || []).length) { list.innerHTML = `<div class="hint">no notes yet</div>`; return; }
+
+  // multi-select: check several memories, delete them in one action
+  const selected = new Set();
+  const bar = document.createElement("div");
+  bar.className = "row"; bar.style.cssText = "gap:8px;margin:2px 0 8px";
+  bar.innerHTML = `<button class="toggle" id="memSelAll">select all</button>
+    <button class="toggle" id="memDelSel" style="color:var(--s-critical)">delete selected (0)</button>`;
+  list.appendChild(bar);
+  const syncBar = () => {
+    $("#memDelSel", list).textContent = `delete selected (${selected.size})`;
+    $("#memDelSel", list).style.display = selected.size ? "" : "none";
+  };
+
+  const kindColor = { fact: "var(--c-memory)", lesson: "var(--s-serious)",
+                      exchange: "var(--baseline)", user_note: "var(--c-model)" };
+  for (const note of data.notes) {
+    const el = document.createElement("div");
+    el.className = "act";
+    el.innerHTML = `<div class="row" style="align-items:flex-start">
+        <input type="checkbox" class="memck" style="margin-top:4px">
+        <span class="k" style="background:${kindColor[note.kind] || "var(--baseline)"};margin-top:4px"></span>
+        <span class="lbl" style="white-space:normal"></span>
+        <span class="meta">${new Date(note.ts * 1000).toLocaleDateString()}</span>
+        <button class="chev" title="delete" style="color:var(--s-critical)">✕</button>
+      </div>`;
+    $(".lbl", el).textContent = `[${note.kind}] ${note.text}`;
+    $(".memck", el).onchange = (e) => {
+      e.target.checked ? selected.add(note.id) : selected.delete(note.id);
+      syncBar();
+    };
+    $(".chev", el).onclick = async (e) => {
+      e.stopPropagation();
+      await fetch(`/api/memory/${note.id}`, { method: "DELETE" });
+      refreshMemory();
+    };
+    list.appendChild(el);
+  }
+  $("#memSelAll", list).onclick = () => {
+    const boxes = [...list.querySelectorAll(".memck")];
+    const all = boxes.every(b => b.checked);
+    boxes.forEach(b => { b.checked = !all; b.dispatchEvent(new Event("change")); });
+  };
+  $("#memDelSel", list).onclick = async () => {
+    if (!selected.size) return;
+    await fetch("/api/memory/bulk_delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [...selected] }),
+    });
+    refreshMemory();
+  };
+  syncBar();
+}
+
+$("#coreSave").onclick = async () => {
+  if (!state.sessionId) return;
+  await fetch(`/api/sessions/${state.sessionId}/core_memory`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: $("#coreMemory").value }) });
+  refreshMemory();
+};
+
+/* ---------- knowledge: soul + wiki ---------- */
+// ---- Scorecard: intelligence performance, projected from the event log ----
+function hbar(label, frac, valText, color) {
+  const row = document.createElement("div");
+  row.className = "hbar";
+  row.innerHTML = `<span class="blabel"></span>
+    <span class="btrack"><span class="bfill" style="width:${Math.max(2, Math.round(frac * 100))}%
+      ${color ? `;background:${color}` : ""}"></span><span class="bval"></span></span>`;
+  $(".blabel", row).textContent = label;
+  $(".bval", row).textContent = valText;
+  return row;
+}
+
+async function refreshScorecard() {
+  const view = $("#scorecardView");
+  let card;
+  try { card = await (await fetch("/api/scorecard?limit=200")).json(); }
+  catch (e) { view.innerHTML = `<div class="hint">scorecard unavailable</div>`; return; }
+  view.innerHTML = "";
+  if (!card.runs) { view.innerHTML = `<div class="hint">no recorded runs yet — run something</div>`; return; }
+
+  const pct = (v) => v == null ? "—" : `${Math.round(v * 100)}%`;
+  const tiles = document.createElement("div");
+  tiles.className = "tiles";
+  const tile = (num, cap, title) => {
+    const t = document.createElement("div");
+    t.className = "tile"; if (title) t.title = title;
+    t.innerHTML = `<div class="num"></div><div class="cap"></div>`;
+    $(".num", t).textContent = num; $(".cap", t).textContent = cap;
+    return t;
+  };
+  tiles.append(
+    tile(pct(card.success_rate), `success · ${card.runs} runs`),
+    tile(pct(card.recovery && card.recovery.rate),
+         `recovery · ${card.recovery.recovered_runs}/${card.recovery.errored_runs} errored runs saved`,
+         "runs that hit an error yet completed — the resilience ladder's measured value"),
+    tile(card.avg_duration_ms ? `${(card.avg_duration_ms / 1000).toFixed(1)}s` : "—",
+         "avg completion"),
+    tile(card.tokens ? String(Math.round(card.tokens.avg_per_run)) : "—", "avg tokens/run"),
+  );
+  view.append(tiles);
+
+  const causes = Object.entries(card.failure_causes || {});
+  if (causes.length) {
+    const h = document.createElement("div");
+    h.className = "hint"; h.textContent = "why runs fail";
+    view.append(h);
+    const maxC = Math.max(...causes.map(([, n]) => n));
+    const failures = causes.reduce((a, [, n]) => a + n, 0);
+    for (const [cause, n] of causes)
+      view.append(hbar(cause, n / maxC, `${n} (${Math.round(n / failures * 100)}%)`,
+                       "var(--s-serious)"));
+  }
+
+  const tr = card.trend || {};
+  if (tr.earlier_success_rate != null && tr.later_success_rate != null) {
+    const d = document.createElement("div");
+    d.className = "hint"; d.style.marginTop = "10px";
+    const delta = tr.later_success_rate - tr.earlier_success_rate;
+    d.textContent = `trend: ${pct(tr.earlier_success_rate)} → ${pct(tr.later_success_rate)} ` +
+      (delta > 0 ? "▲ improving" : delta < 0 ? "▼ regressing" : "▪ flat") +
+      " (earlier half vs later half of the window)";
+    view.append(d);
+  }
+
+  const tools = card.tool_reliability || [];
+  if (tools.length) {
+    const h2 = document.createElement("div");
+    h2.className = "hint"; h2.style.marginTop = "10px"; h2.textContent = "tool reliability";
+    view.append(h2);
+    for (const t of tools.slice(0, 8)) {
+      const total = (t.ok || 0) + (t.fail || 0);
+      view.append(hbar(t.tool, total ? (t.ok || 0) / total : 0,
+                       `${t.ok || 0}/${total} ok`));
+    }
+  }
+}
+
+// ---- Attribution: which context shaped this answer (per run) ----
+async function showAttribution(runId, anchor) {
+  const foot = anchor.closest(".foot") || anchor.parentElement;
+  let old = foot.parentElement.querySelector(".attrView");
+  if (old) { old.remove(); return; }   // toggle off
+  let attr;
+  try { attr = await (await fetch(`/api/runs/${runId}/attribution`)).json(); }
+  catch (e) { setStatus("attribution unavailable"); return; }
+  const box = document.createElement("div");
+  box.className = "attrView";
+  box.style.cssText = "margin:6px 0 2px;padding:8px 10px;border:1px solid var(--border);border-radius:8px";
+  const g = attr.grounded_fraction ?? 0;
+  box.innerHTML = `<div class="hint">grounding: ${Math.round(g * 100)}% from context/tools · ` +
+    `${Math.round((attr.ungrounded_fraction ?? 0) * 100)}% model prior</div>` +
+    `<div class="splitbar"><div style="width:${Math.round(g * 100)}%;background:var(--c-context)"></div>` +
+    `<div style="flex:1;background:var(--baseline)"></div></div>`;
+  const sources = Object.entries(attr.by_source || {});
+  const maxS = Math.max(0.0001, ...sources.map(([, v]) => v));
+  for (const [src, share] of sources)
+    box.append(hbar(src, share / maxS, `${Math.round(share * 100)}%`, "var(--c-context)"));
+  if ((attr.top_influences || []).length) {
+    const h = document.createElement("div");
+    h.className = "hint"; h.style.marginTop = "6px";
+    h.textContent = "top influences: " + attr.top_influences.slice(0, 3)
+      .map(i => `${i.title || i.source_class} (${Math.round(i.share * 100)}%)`).join(" · ");
+    box.append(h);
+  }
+  foot.after(box);
+}
+
+async function refreshKnowledge() {
+  try {
+    $("#soulEditor").value = (await (await fetch("/api/soul")).json()).content || "";
+    const pages = (await (await fetch("/api/wiki")).json()).pages || [];
+    const sel = $("#wikiSelect");
+    sel.innerHTML = `<option value="">${pages.length} page(s)</option>` +
+      pages.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+  } catch (e) {}
+}
+$("#soulSave").onclick = async () => {
+  await fetch("/api/soul", { method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: $("#soulEditor").value }) });
+  setStatus("soul saved");
+};
+async function openWikiPage(title) {
+  if (!title) { $("#wikiEditor").value = ""; $("#wikiLinks").textContent = ""; return; }
+  const r = await (await fetch(`/api/wiki/${encodeURIComponent(title)}`)).json();
+  $("#wikiEditor").value = r.content || "";
+  $("#wikiEditor").dataset.title = title;
+  $("#wikiLinks").textContent = (r.links || []).length ? "links: " + r.links.join(", ") : "";
+}
+$("#wikiSelect").onchange = () => openWikiPage($("#wikiSelect").value);
+$("#wikiOpen").onclick = () => {
+  const t = $("#wikiNew").value.trim() || $("#wikiSelect").value;
+  if (t) { $("#wikiEditor").dataset.title = t; $("#wikiNew").value = ""; openWikiPage($("#wikiSelect").value === t ? t : t); }
+};
+$("#wikiSave").onclick = async () => {
+  const title = $("#wikiEditor").dataset.title || $("#wikiSelect").value || $("#wikiNew").value.trim();
+  if (!title) { alert("give the page a title"); return; }
+  const r = await (await fetch(`/api/wiki/${encodeURIComponent(title)}`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: $("#wikiEditor").value }) })).json();
+  $("#wikiLinks").textContent = (r.links || []).length ? "links: " + r.links.join(", ") : "saved";
+  refreshKnowledge();
+};
+
+/* ---------- schedules ---------- */
+async function refreshSchedules() {
+  const data = await (await fetch("/api/schedules")).json();
+  const list = $("#schedulesList"); list.innerHTML = "";
+  if (!(data.schedules || []).length) { list.innerHTML = `<div class="hint">no schedules yet</div>`; return; }
+  for (const s of data.schedules) {
+    const el = document.createElement("div");
+    el.className = "act";
+    const every = s.every_s >= 86400 ? `${Math.round(s.every_s / 86400)}d`
+      : s.every_s >= 3600 ? `${Math.round(s.every_s / 3600)}h` : `${Math.round(s.every_s / 60)}m`;
+    const next = new Date(s.next_ts * 1000).toLocaleTimeString();
+    el.innerHTML = `<div class="row" style="align-items:flex-start">
+        <span class="k" style="background:${s.enabled ? "var(--s-good)" : "var(--baseline)"};margin-top:4px"></span>
+        <span class="lbl" style="white-space:normal"></span>
+        <span class="meta">every ${every} · next ${s.enabled ? next : "paused"}${s.last_status ? " · last " + s.last_status : ""}</span>
+        <button class="chev" data-act="toggle" title="pause/resume">${s.enabled ? "⏸" : "▶"}</button>
+        <button class="chev" data-act="del" title="delete" style="color:var(--s-critical)">✕</button>
+      </div>`;
+    $(".lbl", el).textContent = s.message;
+    $("[data-act=toggle]", el).onclick = async () => {
+      await fetch(`/api/schedules/${s.id}/toggle?enabled=${!s.enabled}`, { method: "POST" });
+      refreshSchedules();
+    };
+    $("[data-act=del]", el).onclick = async () => {
+      await fetch(`/api/schedules/${s.id}`, { method: "DELETE" });
+      refreshSchedules();
+    };
+    if (s.last_run_id) { el.style.cursor = "pointer"; el.onclick = (e) => {
+      if (e.target.tagName !== "BUTTON") showTrail(s.last_run_id); }; }
+    list.appendChild(el);
+  }
+}
+$("#schedAdd").onclick = async () => {
+  const message = $("#schedMsg").value.trim();
+  if (!message) return;
+  await fetch("/api/schedules", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message, every_s: +$("#schedEvery").value,
+                           provider: state.provider, session_id: state.sessionId }),
+  });
+  $("#schedMsg").value = "";
+  refreshSchedules();
+};
+
+/* ---------- workflows ---------- */
+$("#wfPrompt").oninput = () => {
+  const args = [...new Set(($("#wfPrompt").value.match(/\{([a-zA-Z0-9_.]+)\}/g) || [])
+    .map(s => s.slice(1, -1).split(".")[0]).filter(a => a !== "__raw__"))];
+  $("#wfArgs").textContent = args.length ? "args: " + args.join(", ") : "no {args} yet";
+};
+$("#wfSave").onclick = async () => {
+  const prompt_template = $("#wfPrompt").value.trim();
+  if (!prompt_template) return;
+  const r = await (await fetch("/api/workflows", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: $("#wfTitle").value.trim(), prompt_template,
+                           provider: state.provider, model: modelValue() }),
+  })).json();
+  $("#wfTitle").value = ""; $("#wfPrompt").value = ""; $("#wfArgs").textContent = "";
+  refreshWorkflows();
+};
+async function refreshWorkflows() {
+  const data = await (await fetch("/api/workflows")).json();
+  const list = $("#workflowsList"); list.innerHTML = "";
+  if (!(data.workflows || []).length) { list.innerHTML = `<div class="hint">no workflows yet</div>`; return; }
+  const origin = location.origin;
+  for (const wf of data.workflows) {
+    const el = document.createElement("div");
+    el.className = "act";
+    const url = `${origin}/api/workflows/${wf.slug}/run`;
+    el.innerHTML = `<div class="row" style="align-items:flex-start">
+        <span class="k" style="background:var(--c-packet);margin-top:4px"></span>
+        <span class="lbl" style="white-space:normal"><b></b><br><span class="mono" style="font-size:11px;color:var(--muted)"></span></span>
+        <span class="meta">${wf.runs} runs</span>
+        <button class="chev" data-act="copy" title="copy run URL">⧉</button>
+        <button class="chev" data-act="del" title="delete" style="color:var(--s-critical)">✕</button>
+      </div><div class="detail"><pre></pre></div>`;
+    $("b", el).textContent = wf.title || wf.slug;
+    $(".mono", el).textContent = `POST ${url}` + (wf.arg_names.length ? `  ·  {${wf.arg_names.join(", ")}}` : "");
+    $("pre", el).textContent = `curl -X POST ${url} \\\n  -H 'content-type: application/json' \\\n  -d '${JSON.stringify(Object.fromEntries(wf.arg_names.map(a => [a, "..."])))}'\n\ntemplate:\n${wf.prompt_template}`;
+    $(".lbl", el).onclick = () => el.classList.toggle("open");
+    $("[data-act=copy]", el).onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(url); e.target.textContent = "✓"; };
+    $("[data-act=del]", el).onclick = async (e) => { e.stopPropagation(); await fetch(`/api/workflows/${wf.slug}`, { method: "DELETE" }); refreshWorkflows(); };
+    list.appendChild(el);
+  }
+}
+
+/* ---------- tools & keys ---------- */
+async function refreshTools() {
+  // credentials
+  const creds = (await (await fetch("/api/credentials")).json()).credentials || [];
+  const cl = $("#credList"); cl.innerHTML = creds.length ? "" : `<div class="hint">no keys yet</div>`;
+  for (const c of creds) {
+    const el = document.createElement("div"); el.className = "act";
+    el.innerHTML = `<div class="row"><span class="k" style="background:var(--c-gate)"></span>
+      <span class="lbl"><b>${esc(c.name)}</b> <span class="mono" style="color:var(--muted)">${esc(c.hint)}</span></span>
+      <button class="chev" title="delete" style="color:var(--s-critical)">✕</button></div>`;
+    $(".chev", el).onclick = async () => { await fetch(`/api/credentials/${c.name}`, { method: "DELETE" }); refreshTools(); };
+    cl.appendChild(el);
+  }
+  // custom tools
+  const cts = (await (await fetch("/api/custom_tools")).json()).custom_tools || [];
+  const ctl = $("#customToolsList"); ctl.innerHTML = cts.length ? "" : `<div class="hint">no custom tools yet</div>`;
+  for (const t of cts) {
+    const el = document.createElement("div"); el.className = "act";
+    el.innerHTML = `<div class="row"><span class="k" style="background:${t.enabled ? "var(--c-tool)" : "var(--baseline)"}"></span>
+      <span class="lbl"><b>${esc(t.name)}</b> <span style="color:var(--muted)">${esc(t.method)} ${esc(t.url)}</span></span>
+      <span class="meta">${t.created_by}</span>
+      <button class="chev" data-act="toggle">${t.enabled ? "⏸" : "▶"}</button>
+      <button class="chev" data-act="del" title="delete" style="color:var(--s-critical)">✕</button></div>`;
+    $("[data-act=toggle]", el).onclick = async () => { await fetch(`/api/custom_tools/${t.name}/toggle?enabled=${!t.enabled}`, { method: "POST" }); refreshTools(); };
+    $("[data-act=del]", el).onclick = async () => { await fetch(`/api/custom_tools/${t.name}`, { method: "DELETE" }); refreshTools(); };
+    ctl.appendChild(el);
+  }
+  // channels
+  const chans = (await (await fetch("/api/channels")).json()).channels || {};
+  const chl = $("#channelsList"); chl.innerHTML = "";
+  for (const [name, status] of Object.entries(chans)) {
+    const ok = status === "polling" || status === "configured";
+    const el = document.createElement("div"); el.className = "runrow";
+    el.innerHTML = `<span class="st" style="background:${ok ? "var(--s-good)" : "var(--baseline)"}">${esc(status)}</span><span class="msg">${esc(name)}</span>`;
+    chl.appendChild(el);
+  }
+}
+$("#credAdd").onclick = async () => {
+  const name = $("#credName").value.trim(), value = $("#credValue").value;
+  if (!name || !value) return;
+  await fetch("/api/credentials", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, value }) });
+  $("#credName").value = ""; $("#credValue").value = ""; refreshTools();
+};
+$("#ctAdd").onclick = async () => {
+  const name = $("#ctName").value.trim(), url = $("#ctUrl").value.trim(), description = $("#ctDesc").value.trim();
+  if (!name || !url || !description) { alert("name, url, and description are required"); return; }
+  let headers = {};
+  try { headers = $("#ctHeaders").value.trim() ? JSON.parse($("#ctHeaders").value) : {}; }
+  catch (e) { alert("headers must be valid JSON"); return; }
+  const r = await fetch("/api/custom_tools", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, description, method: $("#ctMethod").value, url, headers }) });
+  if (r.ok) { ["ctName","ctUrl","ctDesc","ctHeaders"].forEach(id => $("#"+id).value = ""); refreshTools(); }
+  else alert("failed: " + (await r.json()).detail);
+};
+
+/* ---------- utils ---------- */
+function speak(turn) {
+  const text = [...turn.querySelectorAll(".text")].map(t => t.textContent).join(" ").slice(0, 1200);
+  if (!text) return;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+}
+function fmtChars(n) { return n == null ? "?" : n > 1000 ? (n / 1000).toFixed(1) + "k chars" : n + " chars"; }
+function short(s, n) { s = s || ""; return s.length > n ? s.slice(0, n) + "…" : s; }
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+</script>
+</body>
+</html>
