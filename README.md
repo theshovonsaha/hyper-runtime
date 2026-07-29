@@ -1,12 +1,28 @@
 # Hyper-Runtime
 
-![CI](https://github.com/your-org/hyper-runtime/actions/workflows/ci.yml/badge.svg)
+
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Bun](https://img.shields.io/badge/Bun-%3E%3D%201.3-black.svg?logo=bun)
 
+<h2 align="center">Harness Trail Runtime Demo</h2>
 
-Hyper-Runtime is an early working runtime and research prototype for a narrow
-question:
+<p align="center">
+  <a href="https://youtu.be/FXjmeqas3w8">
+    <img
+      src="https://img.youtube.com/vi/FXjmeqas3w8/maxresdefault.jpg"
+      alt="Watch the Harness Trail Runtime demo"
+      width="900"
+    />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://youtu.be/FXjmeqas3w8">
+    ▶ Watch the full demo on YouTube
+  </a>
+</p>
+
+### Hyper-Runtime is an early working runtime and research prototype for a narrow question:
 
 > Can an external runtime reduce unauthorized side effects and false claims of
 > completion by making authority, conditions, execution, observation, and
