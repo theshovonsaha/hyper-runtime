@@ -249,14 +249,28 @@ describe('persistent replay', () => {
     const path = join(root, 'run.jsonl');
     const first = new HashChainLedger(new JsonlLedgerStore(path));
     first.append('run:persistent', 'workflow.started', { objective: 'test' });
-    first.append('run:persistent', 'workflow.completed', { passed: true });
+    first.append('run:persistent', 'workflow.receipt', { status: 'completed', passed: true });
 
     const loaded = new HashChainLedger(new JsonlLedgerStore(path));
     expect(inspectReplay(loaded)).toMatchObject({
       valid: true,
       eventCount: 2,
       runIds: ['run:persistent'],
+      runs: [{
+        runId: 'run:persistent',
+        eventCount: 2,
+        status: 'completed',
+      }],
     });
+  });
+
+  test('rejects JSON values that are not ledger events', () => {
+    const root = temporaryWorkspace();
+    const path = join(root, 'invalid.jsonl');
+    writeFileSync(path, '{"looks":"like json"}\n');
+    expect(() => new HashChainLedger(new JsonlLedgerStore(path))).toThrow(
+      'Invalid ledger JSON or event schema at line 1.',
+    );
   });
 });
 

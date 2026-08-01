@@ -40,6 +40,17 @@ export class BoundedProcessCapability implements CapabilityAdapter<ProcessArgs> 
     approval: 'risk_based',
     idempotent: false,
     verification: 'required',
+    inputSchema: {
+      type: 'object',
+      required: ['executable', 'arguments'],
+      properties: {
+        executable: { type: 'string' },
+        arguments: { type: 'array', items: { type: 'string' } },
+        timeoutMs: { type: 'integer' },
+        expectedExitCode: { type: 'integer' },
+      },
+      additionalProperties: false,
+    },
   };
 
   private readonly resolver: WorkspaceTargetResolver;

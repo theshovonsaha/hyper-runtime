@@ -175,6 +175,11 @@ parent intent + actual context + remaining budget
   bounded tokens/actions/time.
 - Child results are rejected when identity, policy history, budgets, evidence,
   verified completion, receipt, or output schema fail validation.
+- Live proposal prompts receive exact intent, principal, condition, evidence,
+  risk, and active-strategy scope plus built-in capability argument schemas;
+  malformed arguments are rejected before adapter invocation.
+- Human-authored correction rules can convert exact observed failure codes into
+  a bounded repair constraint whose application and next outcome are recorded.
 
 ## What is not established
 
@@ -200,6 +205,7 @@ docs/RESEARCH.md          question, hypotheses, metrics, limitations
 docs/ARCHITECTURE.md      dependency and execution boundaries
 docs/DELEGATION.md        recursive child-runtime contract and limitations
 docs/SEMANTIC_CONTEXT.md  typed context projection and phase compilation
+docs/LOCAL_MODEL_PROBES.md local inference context, cache, RAM, and pass probes
 docs/TASK_FORMAT.md       practical CLI and task contract
 docs/THREAT_MODEL.md      protected invariants and explicit non-goals
 docs/LEGACY_AUDIT.md      evidence-based disposition of the old prototype

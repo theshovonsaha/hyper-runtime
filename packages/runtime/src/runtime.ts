@@ -6,6 +6,7 @@ import type {
   Condition,
   IntentContract,
   PolicyDecision,
+  VerificationResult,
 } from '@hyper/contracts';
 import { HashChainLedger } from './ledger';
 import { DeterministicPolicyEngine } from './policy';
@@ -124,7 +125,23 @@ export class AuthorizedRuntime {
     }
 
     this.ledger.append(runId, 'capability.granted', decision.grant as unknown as Record<string, unknown>);
-    const execution = await capability.execute(proposal, decision.grant);
+    let execution;
+    try {
+      execution = await capability.execute(proposal, decision.grant);
+    } catch (error) {
+      execution = {
+        success: false,
+        summary: error instanceof Error ? error.message : String(error),
+        errorCode: 'CAPABILITY_EXECUTION_THROWN',
+        evidence: [],
+      };
+      this.ledger.append(runId, 'capability.execution_failed', {
+        proposalId: proposal.id,
+        capabilityId: capability.manifest.id,
+        errorCode: execution.errorCode,
+        summary: execution.summary,
+      });
+    }
     this.ledger.append(runId, 'action.executed', {
       success: execution.success,
       summary: execution.summary,
@@ -150,16 +167,62 @@ export class AuthorizedRuntime {
       };
     }
 
-    const observation = await capability.observe(proposal);
+    let observation;
+    try {
+      observation = await capability.observe(proposal);
+    } catch (error) {
+      const verification: VerificationResult = {
+        passed: false,
+        reasonCodes: ['CAPABILITY_OBSERVATION_THROWN'],
+        evidence: [],
+      };
+      this.ledger.append(runId, 'state.observation_failed', {
+        proposalId: proposal.id,
+        capabilityId: capability.manifest.id,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      this.ledger.append(runId, 'action.verified', verification as unknown as Record<string, unknown>);
+      const receipt = this.ledger.append(runId, 'action.receipt', {
+        status: 'verification_failed',
+        decisionId: decision.id,
+        executed: true,
+        claimedSuccess: false,
+        verification: verification.reasonCodes,
+      });
+      return {
+        runId,
+        status: 'verification_failed',
+        decision,
+        executed: true,
+        claimedSuccess: false,
+        execution,
+        verification,
+        receiptHash: receipt.hash,
+      };
+    }
     this.ledger.append(runId, 'state.observed', observation as unknown as Record<string, unknown>);
 
-    const verification = input.verificationMode === 'trust_execution'
-      ? {
-          passed: execution.success,
-          reasonCodes: ['EXECUTION_RESULT_TRUSTED_WITHOUT_STATE_CHECK'],
-          evidence: execution.evidence,
-        }
-      : await capability.verify(proposal, execution, observation);
+    let verification: VerificationResult;
+    try {
+      verification = input.verificationMode === 'trust_execution'
+        ? {
+            passed: execution.success,
+            reasonCodes: ['EXECUTION_RESULT_TRUSTED_WITHOUT_STATE_CHECK'],
+            evidence: execution.evidence,
+          }
+        : await capability.verify(proposal, execution, observation);
+    } catch (error) {
+      verification = {
+        passed: false,
+        reasonCodes: ['CAPABILITY_VERIFICATION_THROWN'],
+        evidence: observation.evidence,
+      };
+      this.ledger.append(runId, 'capability.verification_failed', {
+        proposalId: proposal.id,
+        capabilityId: capability.manifest.id,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     this.ledger.append(runId, 'action.verified', verification as unknown as Record<string, unknown>);
     const status = verification.passed ? 'completed' : 'verification_failed';

@@ -1,0 +1,68 @@
+[
+  {
+    "kind": "action",
+    "strategyId": "strategy:multi-tool",
+    "hypothesis": "The source note is readable.",
+    "expectedObservation": "workspace/input.txt contains the example source.",
+    "action": {
+      "id": "proposal:multi-tool-read",
+      "intentId": "intent:multi-tool-example",
+      "principalId": "agent:example",
+      "conditionIds": ["condition:workspace-available"],
+      "capabilityId": "workspace.file.read",
+      "target": "workspace/input.txt",
+      "declaredEffects": ["state.read"],
+      "risk": 1,
+      "expectedEvidence": ["source_read"],
+      "idempotencyKey": "example:multi-tool:read",
+      "args": {}
+    }
+  },
+  {
+    "kind": "action",
+    "strategyId": "strategy:multi-tool",
+    "hypothesis": "The allowlisted runtime diagnostic exits successfully.",
+    "expectedObservation": "bun --version exits with code zero.",
+    "action": {
+      "id": "proposal:multi-tool-process",
+      "intentId": "intent:multi-tool-example",
+      "principalId": "agent:example",
+      "conditionIds": ["condition:workspace-available"],
+      "capabilityId": "workspace.process.run",
+      "target": "workspace/runtime",
+      "declaredEffects": ["process.execute"],
+      "risk": 2,
+      "expectedEvidence": ["diagnostic_exit"],
+      "idempotencyKey": "example:multi-tool:process",
+      "args": {
+        "executable": "bun",
+        "arguments": ["--version"],
+        "expectedExitCode": 0
+      }
+    }
+  },
+  {
+    "kind": "action",
+    "strategyId": "strategy:multi-tool",
+    "hypothesis": "A bounded write creates the requested report.",
+    "expectedObservation": "workspace/report.txt contains the verified report.",
+    "action": {
+      "id": "proposal:multi-tool-write",
+      "intentId": "intent:multi-tool-example",
+      "principalId": "agent:example",
+      "conditionIds": ["condition:workspace-available"],
+      "capabilityId": "workspace.file.write",
+      "target": "workspace/report.txt",
+      "declaredEffects": ["state.write"],
+      "risk": 1,
+      "expectedEvidence": ["report_observed"],
+      "idempotencyKey": "example:multi-tool:write",
+      "args": { "content": "Hyper-Runtime completed a verified multi-tool workflow." }
+    }
+  },
+  {
+    "kind": "complete",
+    "strategyId": "strategy:multi-tool",
+    "evidenceRefs": ["source_read", "diagnostic_exit", "report_observed"]
+  }
+]

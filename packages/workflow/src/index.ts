@@ -6,6 +6,8 @@ import type {
   CausalRecord,
   CompletionAssessment,
   Condition,
+  CorrectionAssessment,
+  CorrectionRule,
   ContextSource,
   DelegationResult,
   EvidenceRef,
@@ -16,7 +18,11 @@ import type {
   WorkflowStepRecord,
 } from '@hyper/contracts';
 import { DynamicContextCompiler } from '@hyper/context';
-import type { ChildRuntimeExecutor, ChildRuntimeRequest } from '@hyper/delegation';
+import {
+  validateJsonSchema,
+  type ChildRuntimeExecutor,
+  type ChildRuntimeRequest,
+} from '@hyper/delegation';
 import type { ModelDriver } from '@hyper/model';
 import {
   AuthorizedRuntime,
@@ -89,6 +95,7 @@ export interface WorkflowDefinition {
   focusTags?: string[];
   tokenBudget?: number;
   maxSteps?: number;
+  correctionRules?: CorrectionRule[];
   approvalFor?: (proposalId: string) => Approval | undefined;
   signal?: AbortSignal;
 }
@@ -125,6 +132,68 @@ function failureSignature(outcome: ActionOutcome): string | undefined {
     ...outcome.decision.reasonCodes,
     ...(outcome.verification?.reasonCodes ?? []),
   ].filter(Boolean).join('|');
+}
+
+function outcomeCodes(outcome: ActionOutcome): string[] {
+  return [
+    outcome.status,
+    outcome.execution?.errorCode,
+    ...outcome.decision.reasonCodes,
+    ...(outcome.verification?.reasonCodes ?? []),
+  ].filter((value): value is string => !!value);
+}
+
+function validateCorrectionRules(rules: CorrectionRule[]): void {
+  const ids = new Set<string>();
+  for (const rule of rules) {
+    if (!rule.id.trim() || ids.has(rule.id)) {
+      throw new Error(`Correction rule IDs must be non-empty and unique: ${rule.id}.`);
+    }
+    ids.add(rule.id);
+    if (
+      rule.triggerCodes.length === 0
+      || rule.triggerCodes.some(code => !code.trim())
+      || !rule.instruction.trim()
+      || !rule.expectedEffect.trim()
+      || !Number.isInteger(rule.maxApplications)
+      || rule.maxApplications < 1
+    ) {
+      throw new Error(`Correction rule ${rule.id} is malformed.`);
+    }
+  }
+}
+
+interface PendingCorrection {
+  rule: CorrectionRule;
+  triggeredByCausalId: string;
+  appliedAtStep: number;
+  triggerFailureSignature?: string;
+  sourceId: string;
+}
+
+function correctionSource(
+  runId: string,
+  step: number,
+  causal: CausalRecord,
+  rule: CorrectionRule,
+  now: string,
+): ContextSource {
+  return {
+    id: `context:${runId}:correction:${rule.id}:${step}`,
+    title: `Active correction: ${rule.id}`,
+    content: rule.instruction,
+    kind: 'constraint',
+    authority: 'constraint',
+    validity: 'active',
+    provenance: [causal.id],
+    tags: ['recover', 'correction', ...rule.focusTags],
+    createdAt: now,
+    priority: 100,
+    derivedFrom: [causal.id],
+    semanticTag: 'repair',
+    confidence: 1,
+    rebuildable: true,
+  };
 }
 
 export class CausalProgressOracle {
@@ -175,11 +244,12 @@ export class CausalProgressOracle {
 }
 
 function evidenceFromOutcome(outcome: ActionOutcome): EvidenceRef[] {
-  return [
+  const evidence = [
     ...(outcome.execution?.evidence ?? []),
     ...(outcome.observation?.evidence ?? []),
     ...(outcome.verification?.evidence ?? []),
   ];
+  return [...new Map(evidence.map(item => [item.id, item])).values()];
 }
 
 function diagnosticSource(
@@ -232,6 +302,27 @@ function observationSource(
   };
 }
 
+function contextAudit(packet: ReturnType<DynamicContextCompiler['compile']>) {
+  const tokensByAuthority: Record<string, number> = {};
+  const tokensBySemanticTag: Record<string, number> = {};
+  const contentSources = new Map<string, string[]>();
+  for (const item of packet.items) {
+    tokensByAuthority[item.authority] =
+      (tokensByAuthority[item.authority] ?? 0) + item.estimatedTokens;
+    const tag = item.semanticTag ?? 'untagged';
+    tokensBySemanticTag[tag] = (tokensBySemanticTag[tag] ?? 0) + item.estimatedTokens;
+    const normalized = item.content.trim().replace(/\s+/g, ' ');
+    const ids = contentSources.get(normalized) ?? [];
+    ids.push(item.sourceId);
+    contentSources.set(normalized, ids);
+  }
+  return {
+    tokensByAuthority,
+    tokensBySemanticTag,
+    duplicateSourceGroups: [...contentSources.values()].filter(ids => ids.length > 1),
+  };
+}
+
 export class WorkflowRunner {
   readonly ledger: HashChainLedger;
   private readonly completionOracle: CompletionOracle;
@@ -248,12 +339,20 @@ export class WorkflowRunner {
   }
 
   async run(definition: WorkflowDefinition): Promise<WorkflowRunResult> {
+    if (this.ledger.hasRun(definition.runId)) {
+      throw new Error(`Run ${definition.runId} already exists in this ledger.`);
+    }
     const steps: WorkflowStepRecord[] = [];
+    const correctionRules = definition.correctionRules?.map(rule => structuredClone(rule)) ?? [];
+    validateCorrectionRules(correctionRules);
+    const correctionApplications = new Map<string, number>();
+    let pendingCorrection: PendingCorrection | undefined;
     const causalHistory: CausalRecord[] = [];
     const sources = definition.sources.map(source => structuredClone(source));
     const satisfiedEvidence = new Set<string>();
     const strategies = new Set([definition.initialStrategyId]);
     let activeStrategyId = definition.initialStrategyId;
+    let consecutiveModelFailures = 0;
     const maxSteps = definition.maxSteps ?? 12;
     const runtime = new AuthorizedRuntime(new DeterministicPolicyEngine(), this.ledger);
 
@@ -262,6 +361,7 @@ export class WorkflowRunner {
       objective: definition.intent.objective,
       initialStrategyId: activeStrategyId,
       maxSteps,
+      correctionRuleIds: correctionRules.map(rule => rule.id),
     });
 
     for (let stepNumber = 1; stepNumber <= maxSteps; stepNumber += 1) {
@@ -293,6 +393,7 @@ export class WorkflowRunner {
         includedSourceIds: packet.items.map(item => item.sourceId),
         excludedSourceIds: packet.excludedSourceIds,
         estimatedTokens: packet.estimatedTokens,
+        audit: contextAudit(packet),
       });
 
       let modelResult;
@@ -300,23 +401,64 @@ export class WorkflowRunner {
         modelResult = await this.options.model.propose(
           packet,
           this.options.capabilities.manifests(),
+          {
+            intentId: definition.intent.id,
+            principalId: definition.intent.principals[0] ?? '',
+            requiredConditionIds: definition.intent.requiredConditionIds,
+            requiredEvidence: definition.intent.requiredEvidence,
+            riskBudget: definition.intent.riskBudget,
+            activeStrategyId,
+          },
         );
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         this.ledger.append(definition.runId, 'model.proposal_failed', { step: stepNumber, reason });
-        return this.finish(definition.runId, 'blocked', steps, activeStrategyId, {
-          reasonCodes: ['MODEL_PROPOSAL_FAILED'],
+        consecutiveModelFailures += 1;
+        if (consecutiveModelFailures >= 2) {
+          return this.finish(definition.runId, 'blocked', steps, activeStrategyId, {
+            reasonCodes: ['MODEL_PROPOSAL_FAILED_REPEATEDLY'],
+          });
+        }
+        sources.push({
+          id: `context:${definition.runId}:model-failure:${stepNumber}`,
+          title: 'Previous proposal was rejected at the canonical boundary',
+          content: `${reason} Return exactly one valid proposal using the supplied scope and capability schema.`,
+          kind: 'diagnostic',
+          authority: 'evidence',
+          validity: 'active',
+          provenance: [`model-failure:${stepNumber}`],
+          tags: ['diagnose', 'recover', activeStrategyId],
+          createdAt: now,
+          priority: 100,
+          semanticTag: 'failure',
+          confidence: 1,
+          rebuildable: true,
         });
+        continue;
       }
 
       const proposal = modelResult.proposal;
+      consecutiveModelFailures = 0;
       this.ledger.append(definition.runId, 'model.proposed', {
         step: stepNumber,
         packetId: packet.id,
         model: modelResult.model,
         proposal,
         usage: modelResult.usage,
+        requestAudit: modelResult.requestAudit,
       });
+
+      if (proposal.strategyId !== activeStrategyId && proposal.kind !== 'pivot') {
+        this.ledger.append(definition.runId, 'model.proposal_rejected', {
+          step: stepNumber,
+          reasonCode: 'STRATEGY_MISMATCH',
+          expectedStrategyId: activeStrategyId,
+          proposedStrategyId: proposal.strategyId,
+        });
+        return this.finish(definition.runId, 'blocked', steps, activeStrategyId, {
+          reasonCodes: ['STRATEGY_MISMATCH'],
+        });
+      }
 
       if (proposal.kind === 'ask') {
         steps.push({
@@ -425,9 +567,31 @@ export class WorkflowRunner {
 
       const capability = this.options.capabilities.get(proposal.action.capabilityId);
       if (!capability) {
+        this.ledger.append(definition.runId, 'model.proposal_rejected', {
+          step: stepNumber,
+          reasonCode: 'UNKNOWN_CAPABILITY',
+          capabilityId: proposal.action.capabilityId,
+        });
         return this.finish(definition.runId, 'blocked', steps, activeStrategyId, {
           reasonCodes: [`UNKNOWN_CAPABILITY:${proposal.action.capabilityId}`],
         });
+      }
+      if (capability.manifest.inputSchema) {
+        const input = validateJsonSchema(capability.manifest.inputSchema, proposal.action.args);
+        if (!input.valid) {
+          this.ledger.append(definition.runId, 'model.proposal_rejected', {
+            step: stepNumber,
+            reasonCode: 'CAPABILITY_INPUT_SCHEMA_MISMATCH',
+            capabilityId: proposal.action.capabilityId,
+            errors: input.errors,
+          });
+          return this.finish(definition.runId, 'blocked', steps, activeStrategyId, {
+            reasonCodes: [
+              `CAPABILITY_INPUT_SCHEMA_MISMATCH:${proposal.action.capabilityId}`,
+              ...input.errors,
+            ],
+          });
+        }
       }
       const outcome = await runtime.execute({
         runId: definition.runId,
@@ -457,6 +621,30 @@ export class WorkflowRunner {
       };
       const progress = this.progressOracle.assess(outcome, causalHistory);
       causalHistory.push(causal);
+
+      if (pendingCorrection) {
+        const disposition: CorrectionAssessment['disposition'] = outcome.status === 'completed'
+          ? 'improved'
+          : signature === pendingCorrection.triggerFailureSignature
+            ? 'not_improved'
+            : 'inconclusive';
+        const assessment: CorrectionAssessment = {
+          ruleId: pendingCorrection.rule.id,
+          triggeredByCausalId: pendingCorrection.triggeredByCausalId,
+          appliedAtStep: pendingCorrection.appliedAtStep,
+          assessedAtStep: stepNumber,
+          disposition,
+          expectedEffect: pendingCorrection.rule.expectedEffect,
+          observedActionStatus: outcome.status,
+          observedFailureSignature: signature,
+        };
+        this.ledger.append(definition.runId, 'correction.assessed', {
+          ...assessment,
+        });
+        const activeSource = sources.find(source => source.id === pendingCorrection?.sourceId);
+        if (activeSource) activeSource.validity = 'superseded';
+        pendingCorrection = undefined;
+      }
       if (outcome.status === 'completed') {
         for (const requirement of proposal.action.expectedEvidence) {
           satisfiedEvidence.add(requirement);
@@ -483,6 +671,37 @@ export class WorkflowRunner {
       const observed = observationSource(definition.runId, stepNumber, outcome, now);
       if (observed) sources.push(observed);
       sources.push(diagnosticSource(definition.runId, stepNumber, causal, progress, now));
+
+      if (outcome.status === 'execution_failed' || outcome.status === 'verification_failed') {
+        const codes = outcomeCodes(outcome);
+        const rule = correctionRules.find(candidate =>
+          (correctionApplications.get(candidate.id) ?? 0) < candidate.maxApplications
+          && candidate.triggerCodes.some(code => codes.includes(code)),
+        );
+        if (rule) {
+          const applied = (correctionApplications.get(rule.id) ?? 0) + 1;
+          correctionApplications.set(rule.id, applied);
+          const source = correctionSource(definition.runId, stepNumber, causal, rule, now);
+          sources.push(source);
+          pendingCorrection = {
+            rule,
+            triggeredByCausalId: causal.id,
+            appliedAtStep: stepNumber,
+            triggerFailureSignature: signature,
+            sourceId: source.id,
+          };
+          this.ledger.append(definition.runId, 'correction.applied', {
+            ruleId: rule.id,
+            triggeredByCausalId: causal.id,
+            appliedAtStep: stepNumber,
+            application: applied,
+            triggerCodes: codes.filter(code => rule.triggerCodes.includes(code)),
+            instruction: rule.instruction,
+            expectedEffect: rule.expectedEffect,
+            sourceId: source.id,
+          });
+        }
+      }
 
       if (outcome.status === 'awaiting_approval') {
         return this.finish(definition.runId, 'needs_approval', steps, activeStrategyId, {

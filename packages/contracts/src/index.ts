@@ -81,6 +81,8 @@ export interface CapabilityManifest {
   approval: 'never' | 'risk_based' | 'always';
   idempotent: boolean;
   verification: 'required' | 'optional';
+  /** Machine-readable arguments exposed to proposal-producing models. */
+  inputSchema?: JsonSchema;
 }
 
 export interface CapabilityGrant {
@@ -331,6 +333,30 @@ export interface ProgressAssessment {
   repeatedFailureCount: number;
 }
 
+/**
+ * A human-authored, deterministic recovery rule. It does not learn or grant
+ * authority; it activates a bounded constraint after an observed failure.
+ */
+export interface CorrectionRule {
+  id: string;
+  triggerCodes: string[];
+  instruction: string;
+  focusTags: string[];
+  maxApplications: number;
+  expectedEffect: string;
+}
+
+export interface CorrectionAssessment {
+  ruleId: string;
+  triggeredByCausalId: string;
+  appliedAtStep: number;
+  assessedAtStep: number;
+  disposition: 'improved' | 'not_improved' | 'inconclusive';
+  expectedEffect: string;
+  observedActionStatus: ActionOutcome['status'];
+  observedFailureSignature?: string;
+}
+
 export interface CompletionAssessment {
   passed: boolean;
   reasonCodes: string[];
@@ -344,10 +370,22 @@ export interface ModelUsage {
   latencyMs: number;
 }
 
+export interface ModelRequestAudit {
+  requestId: string;
+  endpoint: string;
+  sessionIdentifier: string | null;
+  messageCount: number;
+  promptCharacters: number;
+  estimatedTokens: number;
+  toolSchemaCharacters: number;
+  promptHash: string;
+}
+
 export interface ModelProposalResult {
   proposal: WorkflowProposal;
   usage: ModelUsage;
   model: string;
+  requestAudit?: ModelRequestAudit;
 }
 
 export interface WorkflowStepRecord {

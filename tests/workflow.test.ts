@@ -1,11 +1,17 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   CONTRACT_VERSION,
   type ActionProposal,
+  type CapabilityManifest,
   type Condition,
+  type ContextPacket,
   type ContextSource,
+  type CorrectionRule,
   type IntentContract,
+  type ModelProposalResult,
   type WorkflowProposal,
+  type WorkflowRunResult,
 } from '@hyper/contracts';
 import {
   ContextBudgetExceededError,
@@ -16,7 +22,13 @@ import {
   renderContextPacket,
 } from '@hyper/context';
 import { InMemoryWorkspaceCapability, type MemoryWriteArgs } from '@hyper/capability-memory';
-import { parseWorkflowProposal, ScriptedModelDriver } from '@hyper/model';
+import {
+  CanonicalModelDriver,
+  parseWorkflowProposal,
+  ScriptedModelDriver,
+  type ModelDriver,
+  type ModelProposalScope,
+} from '@hyper/model';
 import { CapabilityRegistry, WorkflowRunner } from '@hyper/workflow';
 
 const now = '2026-07-24T12:00:00.000Z';
@@ -308,6 +320,61 @@ function action(
   };
 }
 
+function correctionAwareModel(): ModelDriver {
+  let actionIndex = 0;
+  let repaired = false;
+  return {
+    async propose(
+      packet: ContextPacket,
+      _capabilities: CapabilityManifest[],
+      scope: ModelProposalScope,
+    ): Promise<ModelProposalResult> {
+      if (repaired) {
+        return {
+          proposal: {
+            kind: 'complete',
+            strategyId: scope.activeStrategyId,
+            evidenceRefs: scope.requiredEvidence,
+          },
+          model: 'fixture:correction-aware',
+          usage: { inputTokens: 0, outputTokens: 0, latencyMs: 0 },
+        };
+      }
+      const correctionActive = packet.items.some(item => item.semanticTag === 'repair');
+      actionIndex += 1;
+      repaired = correctionActive;
+      return {
+        proposal: {
+          kind: 'action',
+          strategyId: scope.activeStrategyId,
+          hypothesis: correctionActive
+            ? 'The activated repair constraint should change the write behavior.'
+            : 'The uncorrected write behavior may succeed.',
+          expectedObservation: 'workspace/result.txt contains verified',
+          action: {
+            id: `proposal:correction:${actionIndex}`,
+            intentId: scope.intentId,
+            principalId: scope.principalId,
+            conditionIds: scope.requiredConditionIds,
+            capabilityId: 'memory.workspace.write',
+            target: 'workspace/result.txt',
+            declaredEffects: ['state.write'],
+            risk: 1,
+            expectedEvidence: scope.requiredEvidence,
+            idempotencyKey: `correction:${actionIndex}`,
+            args: {
+              value: 'verified',
+              behavior: correctionActive ? 'apply' : 'fail',
+            },
+          },
+        },
+        model: 'fixture:correction-aware',
+        usage: { inputTokens: 0, outputTokens: 0, latencyMs: 0 },
+      };
+    },
+  };
+}
+
 describe('causal workflow and pivot control', () => {
   test('diagnoses a failure, preserves it across a pivot, and completes from evidence', async () => {
     const fixture = workflowFixture([
@@ -332,6 +399,11 @@ describe('causal workflow and pivot control', () => {
     expect(result.activeStrategyId).toBe('strategy:fresh-write');
     expect(result.steps.some(step => step.proposal.kind === 'pivot')).toBeTrue();
     expect(result.steps[0]?.progress?.recovery).toBe('retry');
+    for (const step of result.steps) {
+      if (step.causal) {
+        expect(new Set(step.causal.evidenceRefs).size).toBe(step.causal.evidenceRefs.length);
+      }
+    }
     expect(fixture.capability.inspect('workspace/result.txt')).toBe('verified');
     expect(fixture.runner.ledger.verifyIntegrity()).toEqual({ valid: true });
   });
@@ -371,6 +443,137 @@ describe('causal workflow and pivot control', () => {
     expect(result.status).toBe('blocked');
     expect(result.reasonCodes).toContain('INVALID_OR_CYCLIC_PIVOT');
   });
+
+  test('rejects an action for a strategy that is not active', async () => {
+    const fixture = workflowFixture([
+      action('proposal:wrong-strategy', 'strategy:unapproved', 'apply'),
+    ]);
+    const result = await fixture.runner.run(fixture.definition);
+    expect(result.status).toBe('blocked');
+    expect(result.reasonCodes).toContain('STRATEGY_MISMATCH');
+    expect(fixture.capability.inspect('workspace/result.txt')).toBeUndefined();
+  });
+
+  test('does not silently append a second workflow with the same run ID', async () => {
+    const fixture = workflowFixture([{
+      kind: 'ask',
+      strategyId: 'strategy:direct',
+      question: 'Need input.',
+      reason: 'Test terminal receipt.',
+    }]);
+    await fixture.runner.run(fixture.definition);
+    const before = fixture.runner.ledger.all().length;
+    await expect(fixture.runner.run(fixture.definition)).rejects.toThrow(
+      'Run run:adaptive already exists in this ledger.',
+    );
+    expect(fixture.runner.ledger.all()).toHaveLength(before);
+  });
+
+  test('rejects malformed capability arguments before invoking the adapter', async () => {
+    const malformed = action(
+      'proposal:bad-input',
+      'strategy:direct',
+      'apply',
+    ) as Extract<WorkflowProposal, { kind: 'action' }>;
+    malformed.action.args = {};
+    const fixture = workflowFixture([malformed]);
+    const result = await fixture.runner.run(fixture.definition);
+
+    expect(result.status).toBe('blocked');
+    expect(result.reasonCodes).toContain(
+      'CAPABILITY_INPUT_SCHEMA_MISMATCH:memory.workspace.write',
+    );
+    expect(fixture.capability.inspect('workspace/result.txt')).toBeUndefined();
+    expect(
+      fixture.runner.ledger.all().some(event => event.type === 'action.executed'),
+    ).toBeFalse();
+  });
+
+  test('feeds one malformed model proposal back for bounded repair', async () => {
+    const malformed = {
+      kind: 'action',
+      strategyId: 'strategy:direct',
+      hypothesis: 'Malformed risk should be rejected.',
+      expectedObservation: 'Nothing executes.',
+      action: {
+        id: 'proposal:model-malformed',
+        intentId: 'intent:workflow',
+        principalId: 'agent:workflow',
+        conditionIds: ['condition:current'],
+        capabilityId: 'memory.workspace.write',
+        target: 'workspace/result.txt',
+        declaredEffects: ['state.write'],
+        risk: 99,
+        expectedEvidence: ['workspace_value_observed'],
+        idempotencyKey: 'malformed:model',
+        args: { value: 'must not execute' },
+      },
+    } as unknown as WorkflowProposal;
+    const fixture = workflowFixture([malformed, {
+      kind: 'ask',
+      strategyId: 'strategy:direct',
+      question: 'Which valid value should be written?',
+      reason: 'Repair used a canonical proposal.',
+    }]);
+    const result = await fixture.runner.run(fixture.definition);
+
+    expect(result.status).toBe('needs_input');
+    expect(result.steps).toHaveLength(1);
+    expect(
+      fixture.runner.ledger.all().filter(event => event.type === 'model.proposal_failed'),
+    ).toHaveLength(1);
+    expect(fixture.capability.inspect('workspace/result.txt')).toBeUndefined();
+  });
+});
+
+describe('human-authored correction grammar', () => {
+  test('recovers only when the failure-to-constraint treatment is enabled', async () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL('../evals/correction-grammar.v1.json', import.meta.url),
+      'utf8',
+    )) as {
+      maxSteps: number;
+      rule: CorrectionRule;
+      expected: {
+        baselineStatus: WorkflowRunResult['status'];
+        treatmentStatus: WorkflowRunResult['status'];
+        applicationCount: number;
+        assessment: string;
+      };
+    };
+
+    async function run(condition: 'baseline' | 'treatment') {
+      const base = workflowFixture([]);
+      const runner = new WorkflowRunner({
+        model: correctionAwareModel(),
+        capabilities: new CapabilityRegistry().register(base.capability),
+        now: () => now,
+      });
+      const result = await runner.run({
+        ...base.definition,
+        runId: `run:correction:${condition}`,
+        maxSteps: fixture.maxSteps,
+        correctionRules: condition === 'treatment' ? [fixture.rule] : [],
+      });
+      return { result, events: runner.ledger.all() };
+    }
+
+    const baseline = await run('baseline');
+    const treatment = await run('treatment');
+    const applications = treatment.events.filter(event => event.type === 'correction.applied');
+    const assessments = treatment.events.filter(event => event.type === 'correction.assessed');
+
+    expect(baseline.result.status).toBe(fixture.expected.baselineStatus);
+    expect(treatment.result.status).toBe(fixture.expected.treatmentStatus);
+    expect(applications).toHaveLength(fixture.expected.applicationCount);
+    expect(assessments[0]?.payload.disposition).toBe(fixture.expected.assessment);
+    expect(
+      treatment.events.some(event =>
+        event.type === 'context.compiled'
+        && (event.payload.includedSourceIds as string[]).some(id => id.includes(':correction:')),
+      ),
+    ).toBeTrue();
+  });
 });
 
 describe('canonical model boundary', () => {
@@ -383,5 +586,78 @@ describe('canonical model boundary', () => {
     }));
     expect(parsed.kind).toBe('ask');
     expect(() => parseWorkflowProposal('I think we should continue.')).toThrow();
+  });
+
+  test('rejects malformed tool effects and risk before policy evaluation', () => {
+    const malformed = action('proposal:malformed', 'strategy:direct', 'apply') as unknown as {
+      action: Record<string, unknown>;
+    };
+    malformed.action.declaredEffects = ['invented.effect'];
+    malformed.action.risk = 99;
+    expect(() => parseWorkflowProposal(JSON.stringify(malformed))).toThrow(
+      'Model action proposal is malformed.',
+    );
+  });
+
+  test('gives a live model exact proposal scope and capability argument schemas', async () => {
+    let system = '';
+    const driver = new CanonicalModelDriver({
+      id: 'test-provider',
+      model: 'test-model',
+      async generate(request) {
+        system = request.system;
+        return {
+          text: JSON.stringify({
+            kind: 'ask',
+            strategyId: 'strategy:scoped',
+            question: 'Which file?',
+            reason: 'The target is not specified.',
+          }),
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    });
+    const packet = new DynamicContextCompiler().compile({
+      runId: 'run:model-scope',
+      phase: 'orient',
+      objective: 'Read one file.',
+      constraints: [],
+      strategyId: 'strategy:scoped',
+      focusTags: [],
+      sources: [],
+      tokenBudget: 200,
+      now,
+    });
+    const result = await driver.propose(packet, [{
+      id: 'workspace.file.read',
+      version: '1.0.0',
+      effects: ['state.read'],
+      targetPatterns: ['workspace/**'],
+      riskCeiling: 2,
+      approval: 'never',
+      idempotent: true,
+      verification: 'required',
+      inputSchema: { type: 'object', additionalProperties: false },
+    }], {
+      intentId: 'intent:scoped',
+      principalId: 'agent:scoped',
+      requiredConditionIds: ['condition:current'],
+      requiredEvidence: ['file_read'],
+      riskBudget: 2,
+      activeStrategyId: 'strategy:scoped',
+    });
+
+    expect(system).toContain('"intentId":"intent:scoped"');
+    expect(system).toContain('"principalId":"agent:scoped"');
+    expect(system).toContain('"inputSchema":{"type":"object"');
+    expect(system).toContain('let the deterministic policy decide');
+    expect(result.requestAudit).toMatchObject({
+      endpoint: 'test-provider',
+      sessionIdentifier: null,
+      messageCount: 2,
+    });
+    expect(result.requestAudit?.promptCharacters).toBeGreaterThan(0);
+    expect(result.requestAudit?.toolSchemaCharacters).toBeGreaterThan(0);
+    expect(result.requestAudit?.promptHash).toHaveLength(64);
   });
 });

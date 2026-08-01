@@ -1,0 +1,51 @@
+{
+  "version": "0.2.0",
+  "intentId": "intent:multi-tool-example",
+  "objective": "Read the source note, run a bounded runtime diagnostic, write a report, and complete only after all results are observed.",
+  "principalId": "agent:example",
+  "authorizedCapabilities": [
+    "workspace.file.read",
+    "workspace.process.run",
+    "workspace.file.write"
+  ],
+  "authorizedResources": ["workspace/**"],
+  "prohibitedEffects": ["state.delete", "network.request"],
+  "requiredEvidence": ["source_read", "diagnostic_exit", "report_observed"],
+  "completionCriteria": ["The source, diagnostic exit, and report content were independently observed."],
+  "riskBudget": 2,
+  "approvalAboveRisk": 3,
+  "constraints": [
+    "Read workspace/input.txt.",
+    "Run only bun --version in workspace/runtime.",
+    "Write workspace/report.txt and do not modify any other file."
+  ],
+  "conditions": [
+    {
+      "id": "condition:workspace-available",
+      "statement": "The example workspace is available for bounded operations.",
+      "status": "active",
+      "evidenceRefs": ["example:user-setup"],
+      "source": "example-task",
+      "observedAt": "2026-08-01T00:00:00.000Z"
+    }
+  ],
+  "sources": [
+    {
+      "id": "goal:multi-tool",
+      "title": "Multi-tool directive",
+      "content": "Inspect the source, check the runtime, create the report, and verify every step.",
+      "kind": "goal",
+      "authority": "directive",
+      "validity": "active",
+      "provenance": ["task.json"],
+      "tags": ["multi-tool", "report"],
+      "createdAt": "2026-08-01T00:00:00.000Z",
+      "priority": 100
+    }
+  ],
+  "initialStrategyId": "strategy:multi-tool",
+  "focusTags": ["multi-tool", "report"],
+  "tokenBudget": 2000,
+  "maxSteps": 6,
+  "allowedExecutables": ["bun"]
+}

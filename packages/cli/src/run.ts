@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
   AllowlistedEnvironmentCredentialProvider,
@@ -10,8 +11,10 @@ import {
 import type {
   Condition,
   ContextSource,
+  CorrectionRule,
   Effect,
   IntentContract,
+  Approval,
   RiskLevel,
   WorkflowProposal,
   WorkflowRunResult,
@@ -29,7 +32,7 @@ import { CapabilityRegistry, WorkflowRunner } from '@hyper/workflow';
 
 export interface HyperTaskFile {
   version: '0.2.0';
-  runId: string;
+  runId?: string;
   intentId: string;
   objective: string;
   principalId: string;
@@ -49,19 +52,23 @@ export interface HyperTaskFile {
   maxSteps?: number;
   allowedExecutables?: string[];
   httpAllowedHosts?: string[];
+  approvals?: Approval[];
+  correctionRules?: CorrectionRule[];
 }
 
 export interface RunCommandOptions {
   taskPath: string;
   workspace: string;
   ledgerPath: string;
-  provider: 'scripted' | 'openai-compatible' | 'anthropic';
+  provider: 'scripted' | 'openai-compatible' | 'anthropic' | 'ollama';
+  runId?: string;
   proposalsPath?: string;
   model?: string;
   baseUrl?: string;
   apiKeyEnvironmentName?: string;
   environment?: Record<string, string | undefined>;
   now?: () => string;
+  modelTimeoutMs?: number;
 }
 
 function loadJson<T>(path: string): T {
@@ -91,34 +98,43 @@ async function modelFor(options: RunCommandOptions): Promise<ModelDriver> {
     return new ScriptedModelDriver(loadJson<WorkflowProposal[]>(resolve(options.proposalsPath)));
   }
   if (!options.model) throw new Error('--model is required for live-provider runs.');
-  if (!options.apiKeyEnvironmentName) {
-    throw new Error('--api-key-env is required for live-provider runs.');
+  let apiKey: string | undefined;
+  if (options.apiKeyEnvironmentName) {
+    const credentials = new AllowlistedEnvironmentCredentialProvider(
+      [options.apiKeyEnvironmentName],
+      options.environment ?? process.env,
+    );
+    apiKey = await credentials.get(options.apiKeyEnvironmentName);
+    if (!apiKey) throw new Error(`Credential ${options.apiKeyEnvironmentName} is unavailable.`);
   }
-  const credentials = new AllowlistedEnvironmentCredentialProvider(
-    [options.apiKeyEnvironmentName],
-    options.environment ?? process.env,
-  );
-  const apiKey = await credentials.get(options.apiKeyEnvironmentName);
-  if (!apiKey) throw new Error(`Credential ${options.apiKeyEnvironmentName} is unavailable.`);
 
   if (options.provider === 'anthropic') {
+    if (!apiKey) throw new Error('--api-key-env is required for Anthropic runs.');
     return new CanonicalModelDriver(new AnthropicMessagesTransport(
       options.model,
       apiKey,
       options.baseUrl,
+      fetch,
+      options.modelTimeoutMs,
     ));
   }
-  if (!options.baseUrl) throw new Error('--base-url is required for OpenAI-compatible providers.');
+  const baseUrl = options.provider === 'ollama'
+    ? options.baseUrl ?? 'http://127.0.0.1:11434/v1'
+    : options.baseUrl;
+  if (!baseUrl) throw new Error('--base-url is required for OpenAI-compatible providers.');
   return new CanonicalModelDriver(new OpenAICompatibleTransport(
     options.model,
     apiKey,
-    options.baseUrl,
+    baseUrl,
+    fetch,
+    options.modelTimeoutMs,
   ));
 }
 
 export async function runTask(options: RunCommandOptions): Promise<WorkflowRunResult> {
   const task = loadJson<HyperTaskFile>(resolve(options.taskPath));
   if (task.version !== '0.2.0') throw new Error(`Unsupported task version: ${task.version}.`);
+  const runId = options.runId ?? task.runId ?? `run:${randomUUID()}`;
   const workspace = resolve(options.workspace);
   const capabilities = new CapabilityRegistry()
     .register(new ReadFileCapability(workspace))
@@ -143,7 +159,7 @@ export async function runTask(options: RunCommandOptions): Promise<WorkflowRunRe
     now: options.now,
   });
   return runner.run({
-    runId: task.runId,
+    runId,
     intent: taskIntent(task),
     conditions: task.conditions,
     constraints: task.constraints,
@@ -152,6 +168,8 @@ export async function runTask(options: RunCommandOptions): Promise<WorkflowRunRe
     focusTags: task.focusTags,
     tokenBudget: task.tokenBudget,
     maxSteps: task.maxSteps,
+    approvalFor: proposalId => task.approvals?.find(approval => approval.proposalId === proposalId),
+    correctionRules: task.correctionRules,
   });
 }
 

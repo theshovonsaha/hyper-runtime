@@ -182,6 +182,27 @@ Version 2 passes all deterministic acceptance criteria. It still uses scripted
 proposals and makes zero model calls, so it establishes mechanism behavior, not
 live-model reliability.
 
+## Correction grammar mechanism ablation
+
+`evals/correction-grammar.v1.json` freezes one failure-to-constraint rule and
+its expected baseline and treatment outcomes before the compile-gated test is
+run:
+
+| Condition | Failure-derived constraint | Expected status |
+|---|---|---|
+| Baseline | absent | `step_limit` |
+| Treatment | one bounded application | `completed` |
+
+The fixture also requires exactly one `correction.applied` event, inclusion of
+the correction source in the next context packet, and an `improved` assessment
+after verified action completion. It uses a deterministic context-responsive
+fixture driver and makes zero model calls.
+
+This establishes wiring and causal event attribution only. It does not show
+that correction rules can be learned from conversation, that arbitrary
+instructions improve model behavior, that the rule caused semantic quality,
+or that a correction transfers across tasks or models.
+
 ## Delegation mechanism status
 
 The repository now includes a recursive child-runtime skeleton, but it is not

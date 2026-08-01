@@ -1,0 +1,26 @@
+{
+  "benchmark": "Correction Grammar Ablation",
+  "benchmarkVersion": "1.0",
+  "researchQuestion": "Can a human-authored failure-to-constraint rule change the next bounded pass and recover a deterministic failing workflow?",
+  "design": {
+    "deterministic": true,
+    "modelCalls": 0
+  },
+  "baselineStatus": "step_limit",
+  "treatmentStatus": "completed",
+  "applicationCount": 1,
+  "assessment": "improved",
+  "correctionIncluded": true,
+  "ledgerValid": true,
+  "acceptance": {
+    "passed": true,
+    "criteria": {
+      "baseline_matches": true,
+      "treatment_matches": true,
+      "application_count_matches": true,
+      "assessment_matches": true,
+      "correction_enters_next_packet": true,
+      "ledgers_are_valid": true
+    }
+  }
+}

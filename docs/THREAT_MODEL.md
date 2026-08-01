@@ -38,6 +38,12 @@ The public runtime is designed to prevent these mechanism-level failures:
 - provider availability and model reasoning quality; and
 - production security certification.
 
+The ledger also does not provide concurrent-writer serialization, crash/resume
+of an incomplete workflow, signed receipts, or protection from a process that
+can rewrite the complete file and recompute its hashes. Replay currently
+establishes schema, sequence, hash-chain integrity, per-run event summaries,
+and terminal receipts only.
+
 The bounded process adapter reduces accidental command scope. It is not a
 security sandbox: an allowlisted executable still inherits the operating
 system authority of the Hyper-Runtime process.

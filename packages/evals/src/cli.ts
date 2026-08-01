@@ -1,12 +1,15 @@
 import { resolve } from 'node:path';
 import { runExperiment, writeReport } from './experiment';
 import { runAdaptiveWorkflowExperiment, writeAdaptiveReport } from './workflow-experiment';
+import { runCorrectionGrammarExperiment, writeCorrectionGrammarReport } from './correction-experiment';
 
 const report = await runExperiment();
 const adaptiveReport = await runAdaptiveWorkflowExperiment();
+const correctionReport = await runCorrectionGrammarExperiment();
 const outputDir = resolve(process.cwd(), 'evals/results');
 writeReport(report, outputDir);
 writeAdaptiveReport(adaptiveReport, outputDir);
+writeCorrectionGrammarReport(correctionReport, outputDir);
 
 console.log(`Authorized-Condition Evals: ${report.acceptance.passed ? 'PASS' : 'FAIL'}`);
 for (const [condition, metrics] of Object.entries(report.metrics)) {
@@ -23,6 +26,16 @@ console.log(
   + `recovery=${adaptiveReport.metrics.recoverySuccessRate.toFixed(3)} `
   + `false_completion=${adaptiveReport.metrics.falseCompletionCommitRate.toFixed(3)}`,
 );
+console.log(
+  `Correction Grammar Ablation: ${correctionReport.acceptance.passed ? 'PASS' : 'FAIL'} `
+  + `baseline=${correctionReport.baselineStatus} `
+  + `treatment=${correctionReport.treatmentStatus} `
+  + `assessment=${correctionReport.assessment ?? 'missing'}`,
+);
 console.log(`Results: ${outputDir}`);
 
-if (!report.acceptance.passed || !adaptiveReport.acceptance.passed) process.exitCode = 1;
+if (
+  !report.acceptance.passed
+  || !adaptiveReport.acceptance.passed
+  || !correctionReport.acceptance.passed
+) process.exitCode = 1;

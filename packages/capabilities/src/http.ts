@@ -118,6 +118,16 @@ export class AllowlistedHttpCapability implements CapabilityAdapter<HttpGetArgs>
       approval: 'risk_based',
       idempotent: true,
       verification: 'required',
+      inputSchema: {
+        type: 'object',
+        required: ['url'],
+        properties: {
+          url: { type: 'string' },
+          expectedStatus: { type: 'integer' },
+          maxBytes: { type: 'integer' },
+        },
+        additionalProperties: false,
+      },
     };
   }
 

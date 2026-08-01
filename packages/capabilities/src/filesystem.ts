@@ -37,6 +37,14 @@ export class ReadFileCapability implements CapabilityAdapter<FileReadArgs> {
     approval: 'never',
     idempotent: true,
     verification: 'required',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        expectedSha256: { type: 'string' },
+        maxBytes: { type: 'integer' },
+      },
+      additionalProperties: false,
+    },
   };
 
   private readonly resolver: WorkspaceTargetResolver;
@@ -134,6 +142,15 @@ export class WriteFileCapability implements CapabilityAdapter<FileWriteArgs> {
     approval: 'risk_based',
     idempotent: true,
     verification: 'required',
+    inputSchema: {
+      type: 'object',
+      required: ['content'],
+      properties: {
+        content: { type: 'string' },
+        expectedPreviousSha256: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
   };
 
   private readonly resolver: WorkspaceTargetResolver;

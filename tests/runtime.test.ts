@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { CONTRACT_VERSION, type ActionProposal, type Condition, type IntentContract } from '@hyper/contracts';
+import {
+  CONTRACT_VERSION,
+  type ActionProposal,
+  type CapabilityAdapter,
+  type Condition,
+  type IntentContract,
+} from '@hyper/contracts';
 import { InMemoryWorkspaceCapability, type MemoryWriteArgs } from '@hyper/capability-memory';
 import {
   AuthorizedRuntime,
@@ -164,6 +170,69 @@ describe('deterministic authority boundary', () => {
       reasonCodes: ['GRANT_EXPIRED'],
     });
   });
+
+  test('turns thrown capability execution into a failed receipt', async () => {
+    const base = new InMemoryWorkspaceCapability();
+    const input = fixture();
+    const runtime = new AuthorizedRuntime();
+    const capability: CapabilityAdapter<MemoryWriteArgs> = {
+      manifest: base.manifest,
+      async execute() { throw new Error('adapter crashed'); },
+      observe: proposal => base.observe(proposal),
+      verify: (proposal, execution, observation) =>
+        base.verify(proposal, execution, observation),
+    };
+    const outcome = await runtime.execute({
+      runId: 'run:execute-throws',
+      now,
+      ...input,
+      capability,
+    });
+
+    expect(outcome.status).toBe('execution_failed');
+    expect(outcome.execution?.errorCode).toBe('CAPABILITY_EXECUTION_THROWN');
+    expect(runtime.ledger.all().at(-1)?.type).toBe('action.receipt');
+    expect(runtime.ledger.verifyIntegrity()).toEqual({ valid: true });
+  });
+
+  test('turns thrown observation and verification into failed receipts', async () => {
+    const observationBase = new InMemoryWorkspaceCapability();
+    const observationRuntime = new AuthorizedRuntime();
+    const observationCapability: CapabilityAdapter<MemoryWriteArgs> = {
+      manifest: observationBase.manifest,
+      execute: (proposal, grant) => observationBase.execute(proposal, grant),
+      async observe() { throw new Error('observer crashed'); },
+      verify: (proposal, execution, observation) =>
+        observationBase.verify(proposal, execution, observation),
+    };
+    const observationOutcome = await observationRuntime.execute({
+      runId: 'run:observe-throws',
+      now,
+      ...fixture({ id: 'proposal:observe-throws' }),
+      capability: observationCapability,
+    });
+    expect(observationOutcome.status).toBe('verification_failed');
+    expect(observationOutcome.verification?.reasonCodes).toContain('CAPABILITY_OBSERVATION_THROWN');
+    expect(observationRuntime.ledger.all().at(-1)?.type).toBe('action.receipt');
+
+    const verificationBase = new InMemoryWorkspaceCapability();
+    const verificationRuntime = new AuthorizedRuntime();
+    const verificationCapability: CapabilityAdapter<MemoryWriteArgs> = {
+      manifest: verificationBase.manifest,
+      execute: (proposal, grant) => verificationBase.execute(proposal, grant),
+      observe: proposal => verificationBase.observe(proposal),
+      async verify() { throw new Error('verifier crashed'); },
+    };
+    const verificationOutcome = await verificationRuntime.execute({
+      runId: 'run:verify-throws',
+      now,
+      ...fixture({ id: 'proposal:verify-throws' }),
+      capability: verificationCapability,
+    });
+    expect(verificationOutcome.status).toBe('verification_failed');
+    expect(verificationOutcome.verification?.reasonCodes).toContain('CAPABILITY_VERIFICATION_THROWN');
+    expect(verificationRuntime.ledger.all().at(-1)?.type).toBe('action.receipt');
+  });
 });
 
 describe('hash-chained ledger', () => {
@@ -176,5 +245,24 @@ describe('hash-chained ledger', () => {
     const internal = ledger as unknown as { events: Array<{ payload: Record<string, unknown> }> };
     internal.events[0]!.payload.value = 99;
     expect(ledger.verifyIntegrity()).toEqual({ valid: false, brokenAt: 0 });
+  });
+
+  test('commits a clone instead of retaining a caller-owned payload', () => {
+    const ledger = new HashChainLedger();
+    const payload = { nested: { value: 1 } };
+    ledger.append('run:immutable-input', 'test.event', payload);
+    payload.nested.value = 99;
+
+    expect(ledger.all()[0]?.payload).toEqual({ nested: { value: 1 } });
+    expect(ledger.verifyIntegrity()).toEqual({ valid: true });
+  });
+
+  test('does not advance memory when durable append fails', () => {
+    const ledger = new HashChainLedger({
+      load: () => [],
+      append: () => { throw new Error('disk full'); },
+    });
+    expect(() => ledger.append('run:io-failure', 'test.event', {})).toThrow('disk full');
+    expect(ledger.all()).toHaveLength(0);
   });
 });

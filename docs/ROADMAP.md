@@ -92,6 +92,43 @@ publication, and independent review remain.
 
 ## Next three polish passes
 
+### Research wedge - representation drift
+
+The current context layer can retain typed state, supersession, confidence,
+and a `drift` tag. It does not yet determine that an internally consistent
+representation has become the wrong abstraction for the current goal. That is
+distinct from fact recall and direct contradiction detection.
+
+The smallest admissible experiment is a frozen single-domain scenario with a
+mid-run premise change:
+
+```text
+raw-history baseline
+  versus
+typed state + contradiction checkpoint
+  -> same task and model
+  -> inject the same changed premise
+  -> measure stale action, detection-before-action, abstention, and overhead
+```
+
+Only after that state-layer treatment establishes an advantage should a second
+experiment add abstraction snapshots and goal-mismatch detection. Semantic
+distance alone is a proposal signal, never a deterministic proof of drift or
+authority to rewrite the goal.
+
+### Correction grammar wedge
+
+The first deterministic slice is implemented: a human-authored rule can map an
+observed failure code to a bounded repair constraint, with application and
+next-action assessment recorded in the canonical ledger. The committed
+baseline-versus-treatment fixture establishes mechanism wiring only.
+
+The next experiment should extract candidate rules from real human correction
+traces, require human acceptance before activation, and compare accepted rules
+against generic reflection prompts on held-out tasks. Primary measures are
+selection accuracy, verified improvement, unnecessary intervention, transfer,
+tokens, and latency.
+
 ### Polish A - delegation falsification
 
 - Freeze adversarial fixtures for capability, resource, prohibition, approval,

@@ -63,7 +63,10 @@ entire process and storage.
 
 Hyper-Runtime deliberately avoids a centralized Relational Database Management System (RDBMS) for its core evaluation and event processing. Instead, state persistence and verification rely on append-only **JSONL (JSON Lines) Hash-Chained Ledgers**.
 
-- **Stateless Verification**: The runtime reconstructs semantic context and verifies completion directly from the canonical event ledger, requiring no separate SQL schema or migration system.
+- **Stateless Integrity Verification**: The runtime verifies event order and
+  hashes directly from the canonical event ledger, requiring no SQL schema or
+  migration system. End-to-end semantic projection rebuilding and crash/resume
+  are not implemented yet.
 - **Portability**: Ledgers can be serialized to files (e.g., `/tmp/hyper.jsonl`), replayed across processes, and trivially versioned.
 - **Opt-in RDBMS**: If an integration or operator UI requires relational queries, they may project the canonical JSONL events into an RDBMS view, but the source-of-truth remains the hash chain.
 
@@ -120,6 +123,12 @@ recovery decision for every action step. Strategy pivots cannot silently change
 the goal contract. `WorkflowChildRuntimeExecutor` adapts this same runner to the
 delegation boundary; a child is a normal workflow under a narrower contract,
 not a separate agent implementation.
+
+The workflow may also apply human-authored correction rules. A rule maps an
+exact observed failure code to a bounded, provenance-linked constraint for the
+next action pass. Applications and subsequent outcomes are canonical events.
+Rules do not grant authority, change the intent, learn themselves, or prove
+that their natural-language instruction caused an improvement.
 
 ### `@hyper/cli`
 

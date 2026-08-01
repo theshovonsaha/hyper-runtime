@@ -9,6 +9,8 @@
     "packages/*"
   ],
   "scripts": {
+    "setup": "bun install && bun run check",
+    "start": "bun run hyper",
     "test": "bun test tests",
     "test:legacy": "bun scripts/test_hyper_runtime.ts",
     "eval": "bun packages/evals/src/cli.ts",
