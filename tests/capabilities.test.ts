@@ -7,11 +7,13 @@ import {
   BoundedProcessCapability,
   ReadFileCapability,
   RemoteCapabilityAdapter,
+  WebSearchCapability,
   WriteFileCapability,
   type FileReadArgs,
   type FileWriteArgs,
   type HttpGetArgs,
   type ProcessArgs,
+  type WebSearchArgs,
 } from '@hyper/capabilities';
 import {
   CONTRACT_VERSION,
@@ -83,6 +85,47 @@ function workflowFixture<Args extends Record<string, unknown>>(
 }
 
 describe('safe external capabilities', () => {
+  test('normalizes and verifies bounded server-side web search results', async () => {
+    let authorization = '';
+    const capability = new WebSearchCapability({
+      tavilyApiKey: 'test-search-key',
+      fetchImpl: async (_input, init) => {
+        authorization = new Headers(init?.headers).get('authorization') ?? '';
+        return Response.json({
+          request_id: 'search-request:test',
+          results: [{
+            title: 'Budget pressures in Canada',
+            url: 'https://example.ca/budget',
+            content: 'Households report food and housing cost pressure.',
+            score: 0.92,
+          }],
+        });
+      },
+    });
+    const fixture = workflowFixture<WebSearchArgs>(capability, {
+      id: 'proposal:web-search',
+      capabilityId: capability.manifest.id,
+      target: 'search://web',
+      declaredEffects: ['network.request'],
+      risk: 1,
+      expectedEvidence: ['web_results_observed'],
+      idempotencyKey: 'web-search:one',
+      args: { query: 'recent budgeting pain points in Canada', maxResults: 5 },
+    });
+
+    const outcome = await new AuthorizedRuntime().execute({
+      runId: 'run:web-search',
+      now,
+      ...fixture,
+      capability,
+    });
+
+    expect(outcome.status).toBe('completed');
+    expect(outcome.observation?.target).toBe('search://web');
+    expect(outcome.verification?.reasonCodes).toContain('WEB_SEARCH_RESULTS_OBSERVED');
+    expect(authorization).toBe('Bearer test-search-key');
+  });
+
   test('writes and independently observes a workspace file', async () => {
     const root = temporaryWorkspace();
     const capability = new WriteFileCapability(root);
@@ -240,6 +283,45 @@ describe('safe external capabilities', () => {
     });
     expect(outcome.status).toBe('execution_failed');
     expect(outcome.execution?.errorCode).toBe('HTTP_REQUEST_FAILED');
+  });
+
+  test('revalidates a custom HTTP path boundary after redirects', async () => {
+    const requested: string[] = [];
+    const capability = new AllowlistedHttpCapability({
+      id: 'custom.http.status',
+      allowedHosts: ['example.com'],
+      pathPrefixes: { 'example.com': ['/v1/status'] },
+      resolveHost: async () => ['93.184.216.34'],
+      fetchImpl: async input => {
+        requested.push(String(input));
+        return new Response(null, {
+          status: 302,
+          headers: { location: '/private/secrets' },
+        });
+      },
+    });
+    expect(capability.manifest.targetPatterns).toContain('https://example.com/v1/status');
+    const fixture = workflowFixture<HttpGetArgs>(capability, {
+      id: 'proposal:path-bounded-http',
+      capabilityId: capability.manifest.id,
+      target: 'https://example.com/v1/status',
+      declaredEffects: ['network.request'],
+      risk: 1,
+      expectedEvidence: ['http_response'],
+      idempotencyKey: 'http:path-boundary',
+      args: { url: 'https://example.com/v1/status' },
+    });
+
+    const outcome = await new AuthorizedRuntime().execute({
+      runId: 'run:path-bounded-http',
+      now,
+      ...fixture,
+      capability,
+    });
+
+    expect(outcome.status).toBe('execution_failed');
+    expect(outcome.execution?.errorCode).toBe('HTTP_REQUEST_FAILED');
+    expect(requested).toEqual(['https://example.com/v1/status']);
   });
 });
 

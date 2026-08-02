@@ -63,6 +63,11 @@ export class DeterministicPolicyEngine {
     }
     if (proposal.risk > intent.riskBudget) reasons.push('INTENT_RISK_BUDGET_EXCEEDED');
     if (proposal.risk > manifest.riskCeiling) reasons.push('CAPABILITY_RISK_CEILING_EXCEEDED');
+    for (const evidenceId of proposal.expectedEvidence) {
+      if (!intent.requiredEvidence.includes(evidenceId)) {
+        reasons.push(`EVIDENCE_OUTSIDE_INTENT:${evidenceId}`);
+      }
+    }
 
     const conditionsById = new Map(conditions.map(condition => [condition.id, condition]));
     for (const requiredId of intent.requiredConditionIds) {

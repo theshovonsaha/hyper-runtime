@@ -112,6 +112,19 @@ describe('deterministic authority boundary', () => {
     expect(decision.reasonCodes).toContain('CAPABILITY_OUTSIDE_INTENT');
   });
 
+  test('does not let a proposal manufacture evidence outside the intent contract', () => {
+    const capability = new InMemoryWorkspaceCapability();
+    const input = fixture({ expectedEvidence: ['confident_model_claim'] });
+    const decision = new DeterministicPolicyEngine().decide({
+      now,
+      ...input,
+      manifest: capability.manifest,
+    });
+
+    expect(decision.disposition).toBe('deny');
+    expect(decision.reasonCodes).toContain('EVIDENCE_OUTSIDE_INTENT:confident_model_claim');
+  });
+
   test('detects a false-success tool result through observed state', async () => {
     const capability = new InMemoryWorkspaceCapability();
     const runtime = new AuthorizedRuntime();

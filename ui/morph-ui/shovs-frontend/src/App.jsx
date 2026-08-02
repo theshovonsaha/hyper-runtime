@@ -8,16 +8,16 @@ import { TurnDetailPane } from './components/TurnDetailPane';
 import { MorphChatModal } from './demos/MorphChatModal';
 import { BlobPlayground } from './demos/BlobPlayground';
 import { BlobAvatar, MorphPanel, useViewStack } from 'morph-ui/react';
-import { Send, ChevronRight, Sparkles, Layers, MessageSquare, Terminal } from 'lucide-react';
+import { Send, ChevronRight, Layers, MessageSquare, Terminal } from 'lucide-react';
 
 function Header({ activeApp, setActiveApp }) {
-  const { gateOn, setGate, autoOn, setAuto, newSession, provider, currentModel } = useShovs();
+  const { newSession, provider, currentModel, profile, setProfile, profiles } = useShovs();
   
   return (
     <header className="header">
-      <BlobAvatar state={gateOn ? "running" : "idle"} size={28} />
-      <span className="header-logo">morph-ui</span>
-      <span className="header-sub">showcase</span>
+      <BlobAvatar state="idle" size={28} />
+      <span className="header-logo">Hyper</span>
+      <span className="header-sub">operator</span>
       
       {/* App Switcher Tabs */}
       <div style={{ display: 'flex', gap: 6, marginLeft: 16 }}>
@@ -25,13 +25,13 @@ function Header({ activeApp, setActiveApp }) {
           className={`header-pill ${activeApp === 'chat-modal' ? 'on' : ''}`}
           onClick={() => setActiveApp('chat-modal')}
         >
-          <MessageSquare size={13} /> Morph Chat Modal
+          <MessageSquare size={13} /> Agent run
         </button>
         <button 
           className={`header-pill ${activeApp === 'shovs-runtime' ? 'on' : ''}`}
           onClick={() => setActiveApp('shovs-runtime')}
         >
-          <Terminal size={13} /> Transparent Runtime
+          <Terminal size={13} /> Runtime trail
         </button>
         <button 
           className={`header-pill ${activeApp === 'blob-playground' ? 'on' : ''}`}
@@ -50,12 +50,13 @@ function Header({ activeApp, setActiveApp }) {
             {provider || 'model'} · {currentModel || 'default'}
           </span>
 
-          <button className={`header-pill ${gateOn ? 'on' : ''}`} onClick={() => setGate(!gateOn)}>
-            <span className="dot"></span> gate
-          </button>
-          <button className={`header-pill ${autoOn ? 'on' : ''}`} onClick={() => setAuto(!autoOn)}>
-            <span className="dot"></span> auto
-          </button>
+          <label className="header-pill">
+            scope
+            <select value={profile} onChange={event => setProfile(event.target.value)}>
+              {profiles.map(value => <option value={value} key={value}>{value}</option>)}
+            </select>
+          </label>
+
           <button className="header-pill" onClick={newSession}>＋ new</button>
         </>
       )}

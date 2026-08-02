@@ -143,6 +143,8 @@ export class AuthorizedRuntime {
       });
     }
     this.ledger.append(runId, 'action.executed', {
+      proposalId: proposal.id,
+      capabilityId: capability.manifest.id,
       success: execution.success,
       summary: execution.summary,
       errorCode: execution.errorCode,
@@ -181,7 +183,11 @@ export class AuthorizedRuntime {
         capabilityId: capability.manifest.id,
         reason: error instanceof Error ? error.message : String(error),
       });
-      this.ledger.append(runId, 'action.verified', verification as unknown as Record<string, unknown>);
+      this.ledger.append(runId, 'action.verified', {
+        proposalId: proposal.id,
+        capabilityId: capability.manifest.id,
+        ...verification,
+      } as unknown as Record<string, unknown>);
       const receipt = this.ledger.append(runId, 'action.receipt', {
         status: 'verification_failed',
         decisionId: decision.id,
@@ -200,7 +206,11 @@ export class AuthorizedRuntime {
         receiptHash: receipt.hash,
       };
     }
-    this.ledger.append(runId, 'state.observed', observation as unknown as Record<string, unknown>);
+    this.ledger.append(runId, 'state.observed', {
+      proposalId: proposal.id,
+      capabilityId: capability.manifest.id,
+      ...observation,
+    } as unknown as Record<string, unknown>);
 
     let verification: VerificationResult;
     try {
@@ -224,7 +234,11 @@ export class AuthorizedRuntime {
       });
     }
 
-    this.ledger.append(runId, 'action.verified', verification as unknown as Record<string, unknown>);
+    this.ledger.append(runId, 'action.verified', {
+      proposalId: proposal.id,
+      capabilityId: capability.manifest.id,
+      ...verification,
+    } as unknown as Record<string, unknown>);
     const status = verification.passed ? 'completed' : 'verification_failed';
     const receipt = this.ledger.append(runId, 'action.receipt', {
       status,

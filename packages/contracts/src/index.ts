@@ -75,6 +75,7 @@ export interface Approval {
 export interface CapabilityManifest {
   id: string;
   version: string;
+  description?: string;
   effects: Effect[];
   targetPatterns: string[];
   riskCeiling: RiskLevel;
@@ -257,6 +258,34 @@ export interface ContextPacketItem {
   semanticTag?: ContextTag;
   confidence?: number;
   rebuildable?: boolean;
+  /** Other non-authoritative sources represented by this exact-content item. */
+  collapsedSourceIds?: string[];
+}
+
+export type ContextExclusionReason =
+  | 'inactive'
+  | 'expired'
+  | 'irrelevant'
+  | 'duplicate'
+  | 'budget';
+
+export interface ContextPacketExclusion {
+  sourceId: string;
+  reason: ContextExclusionReason;
+  representedBySourceId?: string;
+}
+
+export interface ContextPacketAudit {
+  sourcesConsidered: number;
+  sourcesIncluded: number;
+  stableItems: number;
+  dynamicItems: number;
+  stableTokens: number;
+  dynamicTokens: number;
+  duplicateTokensRemoved: number;
+  budgetUtilization: number;
+  tokensByAuthority: Record<string, number>;
+  tokensBySemanticTag: Record<string, number>;
 }
 
 export interface ContextPacket {
@@ -269,6 +298,8 @@ export interface ContextPacket {
   focusTags: string[];
   items: ContextPacketItem[];
   excludedSourceIds: string[];
+  exclusions: ContextPacketExclusion[];
+  audit: ContextPacketAudit;
   estimatedTokens: number;
   tokenBudget: number;
   compiledAt: string;
@@ -378,7 +409,11 @@ export interface ModelRequestAudit {
   promptCharacters: number;
   estimatedTokens: number;
   toolSchemaCharacters: number;
+  systemCharacters: number;
+  contextCharacters: number;
   promptHash: string;
+  systemHash: string;
+  contextHash: string;
 }
 
 export interface ModelProposalResult {

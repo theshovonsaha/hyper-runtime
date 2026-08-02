@@ -56,19 +56,22 @@ export interface HyperTaskFile {
   correctionRules?: CorrectionRule[];
 }
 
-export interface RunCommandOptions {
-  taskPath: string;
-  workspace: string;
-  ledgerPath: string;
+export interface ModelSelectionOptions {
   provider: 'scripted' | 'openai-compatible' | 'anthropic' | 'ollama';
-  runId?: string;
   proposalsPath?: string;
   model?: string;
   baseUrl?: string;
   apiKeyEnvironmentName?: string;
   environment?: Record<string, string | undefined>;
-  now?: () => string;
   modelTimeoutMs?: number;
+}
+
+export interface RunCommandOptions extends ModelSelectionOptions {
+  taskPath: string;
+  workspace: string;
+  ledgerPath: string;
+  runId?: string;
+  now?: () => string;
 }
 
 function loadJson<T>(path: string): T {
@@ -92,7 +95,7 @@ function taskIntent(task: HyperTaskFile): IntentContract {
   };
 }
 
-async function modelFor(options: RunCommandOptions): Promise<ModelDriver> {
+export async function createModelDriver(options: ModelSelectionOptions): Promise<ModelDriver> {
   if (options.provider === 'scripted') {
     if (!options.proposalsPath) throw new Error('--proposals is required for scripted runs.');
     return new ScriptedModelDriver(loadJson<WorkflowProposal[]>(resolve(options.proposalsPath)));
@@ -153,7 +156,7 @@ export async function runTask(options: RunCommandOptions): Promise<WorkflowRunRe
 
   const ledger = new HashChainLedger(new JsonlLedgerStore(resolve(options.ledgerPath)));
   const runner = new WorkflowRunner({
-    model: await modelFor(options),
+    model: await createModelDriver(options),
     capabilities,
     ledger,
     now: options.now,

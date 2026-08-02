@@ -1,6 +1,8 @@
 import type {
   ContextAuthority,
   ContextPacket,
+  ContextPacketAudit,
+  ContextPacketExclusion,
   ContextPacketItem,
   ContextRecord,
   ContextSource,
@@ -99,9 +101,18 @@ export function estimateTokens(content: string): number {
   return Math.max(1, Math.ceil(content.length / 4));
 }
 
-function activeAt(source: ContextSource, now: string): boolean {
-  return source.validity === 'active'
-    && (!source.expiresAt || Date.parse(source.expiresAt) > Date.parse(now));
+function exclusionBeforeRelevance(
+  source: ContextSource,
+  now: string,
+): ContextPacketExclusion['reason'] | undefined {
+  if (source.validity === 'expired') return 'expired';
+  if (source.validity !== 'active') return 'inactive';
+  if (source.expiresAt && Date.parse(source.expiresAt) <= Date.parse(now)) return 'expired';
+  return undefined;
+}
+
+function normalizedContent(content: string): string {
+  return content.trim().replace(/\s+/g, ' ');
 }
 
 function scoreSource(source: ContextSource, input: CompileContextInput): number {
@@ -134,19 +145,56 @@ function relevantSource(source: ContextSource, input: CompileContextInput): bool
     || source.priority >= 50;
 }
 
-function packetItem(source: ContextSource, score: number): ContextPacketItem {
+function packetItem(
+  source: ContextSource,
+  score: number,
+  collapsedSourceIds: string[] = [],
+  additionalProvenance: string[] = [],
+): ContextPacketItem {
   return {
     sourceId: source.id,
     title: source.title,
     content: source.content,
     authority: source.authority,
-    provenance: [...source.provenance],
+    provenance: [...new Set([...source.provenance, ...additionalProvenance])],
     instructionEligible: source.authority === 'directive' || source.authority === 'constraint',
     score,
     estimatedTokens: estimateTokens(source.content),
     semanticTag: source.semanticTag,
     confidence: source.confidence,
     rebuildable: source.rebuildable,
+    ...(collapsedSourceIds.length > 0 ? { collapsedSourceIds: [...collapsedSourceIds] } : {}),
+  };
+}
+
+function packetAudit(
+  sourceCount: number,
+  items: ContextPacketItem[],
+  stableTokens: number,
+  duplicateTokensRemoved: number,
+  tokenBudget: number,
+): ContextPacketAudit {
+  const tokensByAuthority: Record<string, number> = {};
+  const tokensBySemanticTag: Record<string, number> = {};
+  for (const item of items) {
+    tokensByAuthority[item.authority] =
+      (tokensByAuthority[item.authority] ?? 0) + item.estimatedTokens;
+    const tag = item.semanticTag ?? 'untagged';
+    tokensBySemanticTag[tag] = (tokensBySemanticTag[tag] ?? 0) + item.estimatedTokens;
+  }
+  const estimatedTokens = items.reduce((total, item) => total + item.estimatedTokens, 0);
+  const stableItems = items.filter(item => item.instructionEligible).length;
+  return {
+    sourcesConsidered: sourceCount,
+    sourcesIncluded: items.length,
+    stableItems,
+    dynamicItems: items.length - stableItems,
+    stableTokens,
+    dynamicTokens: estimatedTokens - stableTokens,
+    duplicateTokensRemoved,
+    budgetUtilization: tokenBudget === 0 ? 0 : estimatedTokens / tokenBudget,
+    tokensByAuthority,
+    tokensBySemanticTag,
   };
 }
 
@@ -159,9 +207,18 @@ export class ContextBudgetExceededError extends Error {
 
 export class DynamicContextCompiler {
   compile(input: CompileContextInput): ContextPacket {
+    const exclusions = new Map<string, ContextPacketExclusion>();
     const candidates = input.sources
-      .filter(source => activeAt(source, input.now))
-      .filter(source => relevantSource(source, input))
+      .filter(source => {
+        const reason = exclusionBeforeRelevance(source, input.now);
+        if (reason) exclusions.set(source.id, { sourceId: source.id, reason });
+        return !reason;
+      })
+      .filter(source => {
+        const relevant = relevantSource(source, input);
+        if (!relevant) exclusions.set(source.id, { sourceId: source.id, reason: 'irrelevant' });
+        return relevant;
+      })
       .map(source => ({ source, score: scoreSource(source, input) }))
       .sort((left, right) =>
         right.score - left.score
@@ -172,9 +229,37 @@ export class DynamicContextCompiler {
     const stable = candidates.filter(candidate =>
       candidate.source.authority === 'directive' || candidate.source.authority === 'constraint',
     );
-    const dynamic = candidates.filter(candidate =>
+    const dynamicCandidates = candidates.filter(candidate =>
       candidate.source.authority !== 'directive' && candidate.source.authority !== 'constraint',
     );
+    const dynamic: Array<typeof dynamicCandidates[number] & {
+      collapsedSourceIds: string[];
+      additionalProvenance: string[];
+    }> = [];
+    const representations = new Map<string, typeof dynamic[number]>();
+    let duplicateTokensRemoved = 0;
+    for (const candidate of dynamicCandidates) {
+      const key = normalizedContent(candidate.source.content);
+      const representedBy = representations.get(key);
+      if (representedBy) {
+        representedBy.collapsedSourceIds.push(candidate.source.id);
+        representedBy.additionalProvenance.push(...candidate.source.provenance);
+        duplicateTokensRemoved += estimateTokens(candidate.source.content);
+        exclusions.set(candidate.source.id, {
+          sourceId: candidate.source.id,
+          reason: 'duplicate',
+          representedBySourceId: representedBy.source.id,
+        });
+        continue;
+      }
+      const representation = {
+        ...candidate,
+        collapsedSourceIds: [],
+        additionalProvenance: [],
+      };
+      dynamic.push(representation);
+      representations.set(key, representation);
+    }
     const stableItems = stable.map(candidate => packetItem(candidate.source, candidate.score));
     const stableTokens = stableItems.reduce((total, item) => total + item.estimatedTokens, 0);
     if (stableTokens > input.tokenBudget) {
@@ -184,12 +269,23 @@ export class DynamicContextCompiler {
     const items = [...stableItems];
     let estimatedTokens = stableTokens;
     for (const candidate of dynamic) {
-      const item = packetItem(candidate.source, candidate.score);
-      if (estimatedTokens + item.estimatedTokens > input.tokenBudget) continue;
+      const item = packetItem(
+        candidate.source,
+        candidate.score,
+        candidate.collapsedSourceIds,
+        candidate.additionalProvenance,
+      );
+      if (estimatedTokens + item.estimatedTokens > input.tokenBudget) {
+        exclusions.set(candidate.source.id, { sourceId: candidate.source.id, reason: 'budget' });
+        continue;
+      }
       items.push(item);
       estimatedTokens += item.estimatedTokens;
     }
     const included = new Set(items.map(item => item.sourceId));
+    const orderedExclusions = input.sources
+      .filter(source => !included.has(source.id))
+      .map(source => exclusions.get(source.id) ?? { sourceId: source.id, reason: 'budget' as const });
 
     return {
       id: `context:${input.runId}:${input.phase}:${input.strategyId}:${input.now}`,
@@ -200,9 +296,15 @@ export class DynamicContextCompiler {
       strategyId: input.strategyId,
       focusTags: [...input.focusTags],
       items,
-      excludedSourceIds: input.sources
-        .filter(source => !included.has(source.id))
-        .map(source => source.id),
+      excludedSourceIds: orderedExclusions.map(exclusion => exclusion.sourceId),
+      exclusions: orderedExclusions,
+      audit: packetAudit(
+        input.sources.length,
+        items,
+        stableTokens,
+        duplicateTokensRemoved,
+        input.tokenBudget,
+      ),
       estimatedTokens,
       tokenBudget: input.tokenBudget,
       compiledAt: input.now,

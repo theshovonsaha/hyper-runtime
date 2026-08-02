@@ -161,12 +161,13 @@ verification. Planned additions:
 
 ## Version 2 adaptive mechanism benchmark
 
-`evals/workflow-context.v1.json` adds four context fixtures and three workflow
+`evals/workflow-context.v1.json` v1.1 adds five context fixtures and three workflow
 fixtures. It measures:
 
 - inclusion of authoritative constraints;
 - exclusion of stale and budget-irrelevant sources;
 - isolation of untrusted content from instruction authority;
+- exact duplicate dynamic-source collapse with an explicit exclusion reason;
 - expected workflow terminal state;
 - causal trace coverage;
 - recovery through a non-cyclic strategy pivot;

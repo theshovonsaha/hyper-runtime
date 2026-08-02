@@ -46,8 +46,26 @@ export class RequiredEvidenceCompletionOracle implements CompletionOracle {
     const missingObserved = input.intent.requiredEvidence.filter(
       requirement => !input.satisfiedEvidence.includes(requirement),
     );
+    const verifiedEvidenceByRequirement = new Map<string, Set<string>>();
+    for (const step of input.steps) {
+      if (
+        step.proposal.kind !== 'action'
+        || step.outcome?.status !== 'completed'
+        || !step.outcome.verification?.passed
+      ) continue;
+      for (const requirement of step.proposal.action.expectedEvidence) {
+        const evidenceIds = verifiedEvidenceByRequirement.get(requirement) ?? new Set<string>();
+        for (const evidence of step.outcome.verification.evidence) evidenceIds.add(evidence.id);
+        verifiedEvidenceByRequirement.set(requirement, evidenceIds);
+      }
+    }
     const missingClaim = input.intent.requiredEvidence.filter(
-      requirement => !input.proposal.evidenceRefs.includes(requirement),
+      requirement => {
+        if (input.proposal.evidenceRefs.includes(requirement)) return false;
+        const verifiedIds = verifiedEvidenceByRequirement.get(requirement);
+        return !verifiedIds
+          || !input.proposal.evidenceRefs.some(evidenceId => verifiedIds.has(evidenceId));
+      },
     );
     const passed = missingObserved.length === 0 && missingClaim.length === 0;
     return {
@@ -97,6 +115,7 @@ export interface WorkflowDefinition {
   maxSteps?: number;
   correctionRules?: CorrectionRule[];
   approvalFor?: (proposalId: string) => Approval | undefined;
+  requestApprovalFor?: (proposalId: string) => Promise<Approval | undefined>;
   signal?: AbortSignal;
 }
 
@@ -302,27 +321,6 @@ function observationSource(
   };
 }
 
-function contextAudit(packet: ReturnType<DynamicContextCompiler['compile']>) {
-  const tokensByAuthority: Record<string, number> = {};
-  const tokensBySemanticTag: Record<string, number> = {};
-  const contentSources = new Map<string, string[]>();
-  for (const item of packet.items) {
-    tokensByAuthority[item.authority] =
-      (tokensByAuthority[item.authority] ?? 0) + item.estimatedTokens;
-    const tag = item.semanticTag ?? 'untagged';
-    tokensBySemanticTag[tag] = (tokensBySemanticTag[tag] ?? 0) + item.estimatedTokens;
-    const normalized = item.content.trim().replace(/\s+/g, ' ');
-    const ids = contentSources.get(normalized) ?? [];
-    ids.push(item.sourceId);
-    contentSources.set(normalized, ids);
-  }
-  return {
-    tokensByAuthority,
-    tokensBySemanticTag,
-    duplicateSourceGroups: [...contentSources.values()].filter(ids => ids.length > 1),
-  };
-}
-
 export class WorkflowRunner {
   readonly ledger: HashChainLedger;
   private readonly completionOracle: CompletionOracle;
@@ -339,7 +337,7 @@ export class WorkflowRunner {
   }
 
   async run(definition: WorkflowDefinition): Promise<WorkflowRunResult> {
-    if (this.ledger.hasRun(definition.runId)) {
+    if (this.ledger.forRun(definition.runId).some(event => event.type === 'workflow.started')) {
       throw new Error(`Run ${definition.runId} already exists in this ledger.`);
     }
     const steps: WorkflowStepRecord[] = [];
@@ -353,6 +351,8 @@ export class WorkflowRunner {
     const strategies = new Set([definition.initialStrategyId]);
     let activeStrategyId = definition.initialStrategyId;
     let consecutiveModelFailures = 0;
+    let previousCompletionFailure = '';
+    let repeatedCompletionFailures = 0;
     const maxSteps = definition.maxSteps ?? 12;
     const runtime = new AuthorizedRuntime(new DeterministicPolicyEngine(), this.ledger);
 
@@ -387,23 +387,38 @@ export class WorkflowRunner {
         tokenBudget: definition.tokenBudget ?? 4_000,
         now,
       });
+      const registeredCapabilityManifests = this.options.capabilities.manifests();
+      const authorizedCapabilities = definition.intent.authorizedCapabilities;
+      const capabilityManifests = authorizedCapabilities
+        ? registeredCapabilityManifests.filter(manifest => authorizedCapabilities.includes(manifest.id))
+        : registeredCapabilityManifests;
       this.ledger.append(definition.runId, 'context.compiled', {
+        step: stepNumber,
         packetId: packet.id,
         phase: packet.phase,
+        objective: packet.objective,
+        strategyId: packet.strategyId,
+        legalCapabilityIds: capabilityManifests.map(manifest => manifest.id),
+        outputContract: ['action', 'pivot', 'ask', 'complete'],
+        requiredEvidence: definition.intent.requiredEvidence,
+        riskBudget: definition.intent.riskBudget,
         includedSourceIds: packet.items.map(item => item.sourceId),
         excludedSourceIds: packet.excludedSourceIds,
+        exclusions: packet.exclusions,
         estimatedTokens: packet.estimatedTokens,
-        audit: contextAudit(packet),
+        tokenBudget: packet.tokenBudget,
+        audit: packet.audit,
       });
 
       let modelResult;
       try {
         modelResult = await this.options.model.propose(
           packet,
-          this.options.capabilities.manifests(),
+          capabilityManifests,
           {
             intentId: definition.intent.id,
             principalId: definition.intent.principals[0] ?? '',
+            authorizedCapabilityIds: capabilityManifests.map(manifest => manifest.id),
             requiredConditionIds: definition.intent.requiredConditionIds,
             requiredEvidence: definition.intent.requiredEvidence,
             riskBudget: definition.intent.riskBudget,
@@ -550,6 +565,19 @@ export class WorkflowRunner {
             reasonCodes: ['COMPLETION_ORACLE_PASSED'],
           });
         }
+        const completionFailure = completion.reasonCodes.slice().sort().join('|');
+        repeatedCompletionFailures = completionFailure === previousCompletionFailure
+          ? repeatedCompletionFailures + 1
+          : 1;
+        previousCompletionFailure = completionFailure;
+        if (repeatedCompletionFailures >= 2) {
+          return this.finish(definition.runId, 'blocked', steps, activeStrategyId, {
+            reasonCodes: [
+              'REPEATED_COMPLETION_REJECTION',
+              ...completion.reasonCodes,
+            ],
+          });
+        }
         sources.push({
           id: `context:${definition.runId}:completion-rejected:${stepNumber}`,
           title: 'Completion claim rejected',
@@ -593,7 +621,7 @@ export class WorkflowRunner {
           });
         }
       }
-      const outcome = await runtime.execute({
+      let outcome = await runtime.execute({
         runId: definition.runId,
         now,
         intent: definition.intent,
@@ -602,6 +630,33 @@ export class WorkflowRunner {
         capability,
         approval: definition.approvalFor?.(proposal.action.id),
       });
+      if (outcome.status === 'awaiting_approval' && definition.requestApprovalFor) {
+        this.ledger.append(definition.runId, 'workflow.approval_requested', {
+          step: stepNumber,
+          proposalId: proposal.action.id,
+          capabilityId: proposal.action.capabilityId,
+          target: proposal.action.target,
+          risk: proposal.action.risk,
+          declaredEffects: proposal.action.declaredEffects,
+        });
+        const approval = await definition.requestApprovalFor(proposal.action.id);
+        this.ledger.append(definition.runId, 'workflow.approval_resolved', {
+          step: stepNumber,
+          proposalId: proposal.action.id,
+          approved: !!approval,
+        });
+        if (approval) {
+          outcome = await runtime.execute({
+            runId: definition.runId,
+            now: this.now(),
+            intent: definition.intent,
+            conditions: definition.conditions,
+            proposal: proposal.action,
+            capability,
+            approval,
+          });
+        }
+      }
       const signature = failureSignature(outcome);
       const causal: CausalRecord = {
         id: `causal:${definition.runId}:${stepNumber}`,

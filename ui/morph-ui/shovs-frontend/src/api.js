@@ -6,10 +6,12 @@ export const api = {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`API Error: ${res.statusText}`);
       return await res.json();
-    } catch (err) {
+    } catch {
       // Graceful Fallback for Standalone / Demo Mode when backend is offline
       if (endpoint === '/api/config') {
         return {
+          ok: false,
+          runtime: 'offline-demo',
           provider: 'demo-provider',
           providers_available: { 'demo-provider': true, 'openai': true },
           models: { 'demo-provider': 'morph-v1' },
@@ -35,7 +37,7 @@ export const api = {
       if (!res.ok) throw new Error(`API Error: ${res.statusText}`);
       return await res.json();
     } catch (err) {
-      return { ok: true, status: "demo" };
+      return { ok: false, status: "offline", error: err.message };
     }
   },
   put: async (endpoint, body = {}) => {
@@ -48,15 +50,15 @@ export const api = {
       if (!res.ok) throw new Error(`API Error: ${res.statusText}`);
       return await res.json();
     } catch (err) {
-      return { ok: true };
+      return { ok: false, error: err.message };
     }
   },
   delete: async (endpoint) => {
     try {
       const res = await fetch(endpoint, { method: "DELETE" });
       return res.ok;
-    } catch (err) {
-      return true;
+    } catch {
+      return false;
     }
   }
 };

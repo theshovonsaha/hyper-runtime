@@ -123,11 +123,12 @@ observed failure code to a bounded repair constraint, with application and
 next-action assessment recorded in the canonical ledger. The committed
 baseline-versus-treatment fixture establishes mechanism wiring only.
 
-The next experiment should extract candidate rules from real human correction
-traces, require human acceptance before activation, and compare accepted rules
-against generic reflection prompts on held-out tasks. Primary measures are
-selection accuracy, verified improvement, unnecessary intervention, transfer,
-tokens, and latency.
+The operator surface can now record real human correction traces and mark them
+accepted for experiment without activating them as policy. The next experiment
+should evaluate those accepted candidates against generic reflection prompts on
+held-out tasks. Activation must remain an explicit task input. Primary measures
+are selection accuracy, verified improvement, unnecessary intervention,
+transfer, tokens, and latency.
 
 ### Polish A - delegation falsification
 

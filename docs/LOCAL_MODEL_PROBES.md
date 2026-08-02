@@ -18,9 +18,15 @@ canonical events + current sources
 
 The packet currently carries objective, active strategy, phase, constraints,
 selected artifacts, provenance, authority, and a token budget. The model also
-receives exact proposal scope, available capability manifests, and argument
+receives exact proposal scope, intent-authorized capability manifests, and argument
 schemas. Runtime-only grants, approvals, ledger hashes, and adapter enforcement
 remain outside the prompt.
+
+Compilation now assigns every omitted source an explicit reason and collapses
+exact duplicate non-authoritative content before it spends the token budget.
+The retained representation preserves the contributing source IDs and merged
+provenance. Directive and constraint records are never collapsed because equal
+wording can still have distinct provenance or conceal an authoritative conflict.
 
 This establishes a pass compiler and validator. Human-authored correction rules
 can now activate a one-pass repair constraint from an exact failure code and
@@ -51,14 +57,17 @@ Every live `model.proposed` event can include:
 - message count;
 - prompt character count and token estimate;
 - capability-schema character count;
-- SHA-256 prompt hash; and
+- system/context character counts and separate SHA-256 hashes;
+- combined SHA-256 prompt hash; and
 - provider-reported input/output tokens and latency.
 
-Every `context.compiled` event includes token totals by authority and semantic
-tag plus exact duplicate-content source groups. Raw prompts are not written to
-the ledger because they may contain sensitive source material. The hash audits
-identity, not semantic equivalence. Server-applied chat-template tokens are not
-visible through the generic transport.
+Every `context.compiled` event includes the pass objective, strategy, legal
+capability IDs, output contract, required evidence, risk budget, reasoned
+exclusions, stable/dynamic token totals, budget utilization, and duplicate
+tokens removed. Raw prompts are not written to the ledger because they may
+contain sensitive source material. Hashes audit identity, not semantic
+equivalence. Server-applied chat-template tokens are not visible through the
+generic transport.
 
 ## Frozen probe matrix
 
@@ -71,7 +80,7 @@ visible through the generic transport.
 | Prefix reuse | stable prefix with changed suffix, then earlier mutations | prompt-evaluation latency delta |
 | Cache release | sample at 0s, 10s, 60s, and 5m | pressure/swap and resident-memory decay |
 | Concurrency | one, two, and four equal-context requests | per-slot memory multiplication |
-| Exact duplicates | repeated artifacts under different source IDs | duplicate groups and token overhead |
+| Exact duplicates | repeated artifacts under different source IDs | collapsed IDs, provenance, and tokens removed |
 | Instruction conflict | old versus new directive at controlled positions | adherence, recency, lost-middle errors |
 | Runtime ablation | full accumulated history versus bounded packets | task accuracy, stale action, tokens, latency, RAM |
 

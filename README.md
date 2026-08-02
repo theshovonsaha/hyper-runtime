@@ -40,7 +40,7 @@ is deliberately weak so each mechanism can be isolated. See
 [machine-readable results](evals/results/latest.json) for definitions,
 acceptance thresholds, and limitations.
 
-The additional Adaptive Context and Workflow benchmark contains four context
+The additional Adaptive Context and Workflow benchmark contains five context
 fixtures and three multi-step workflow fixtures:
 
 | Metric | Result |
@@ -72,6 +72,26 @@ bun run check
 4. generation of `evals/results/latest.json` and `latest.md`.
 
 No API key or model call is required.
+
+Launch the operator UI and evaluated backend together:
+
+```bash
+bun run dev
+```
+
+The development launcher starts the runtime, waits for its health endpoint,
+then starts the frontend with the `/api` proxy connected.
+
+The Morph operator surface includes restart-persistent chats, replayable run
+trails, live provider/model discovery, model/profile dropdowns,
+proposal-scoped approvals, verified-outcome memory, bounded custom HTTP tools,
+provider-specific recurring schedules, and a deterministic scorecard. See
+[HTTP service](docs/HTTP_SERVICE.md) for configuration and the remaining
+local-alpha limits.
+
+The operator library also exposes bounded-pass signals and a correction review
+queue. Correction candidates are inert records accepted for later experiments;
+they never become runtime policy merely because they were entered in the UI.
 
 Run the practical verified-file example:
 
@@ -160,6 +180,9 @@ parent intent + actual context + remaining budget
   a token budget.
 - Expired sources are excluded and irrelevant sources must clear a relevance
   gate; non-authoritative sources are rendered as evidence-only.
+- Exact duplicate non-authoritative sources are represented once with merged
+  provenance and explicit exclusion reasons; authoritative records remain
+  distinct so conflicts and policy provenance stay visible.
 - Unsupported completion claims are rejected until required evidence has been
   produced by a verified action.
 - Failed actions produce causal records and repeated strategies can pivot
@@ -180,6 +203,12 @@ parent intent + actual context + remaining budget
   malformed arguments are rejected before adapter invocation.
 - Human-authored correction rules can convert exact observed failure codes into
   a bounded repair constraint whose application and next outcome are recorded.
+- Human correction traces can be queued and reviewed as inert experiment
+  candidates without silently activating them as policy.
+- The evaluated HTTP surface persists sessions and verified-outcome memory,
+  synthesizes natural answers only against verified evidence references, and
+  routes custom HTTP tools and recurring jobs through the same policy,
+  observation, verification, and ledger path.
 
 ## What is not established
 
@@ -207,6 +236,7 @@ docs/DELEGATION.md        recursive child-runtime contract and limitations
 docs/SEMANTIC_CONTEXT.md  typed context projection and phase compilation
 docs/LOCAL_MODEL_PROBES.md local inference context, cache, RAM, and pass probes
 docs/TASK_FORMAT.md       practical CLI and task contract
+docs/HTTP_SERVICE.md      evaluated local HTTP service and operator UI wiring
 docs/THREAT_MODEL.md      protected invariants and explicit non-goals
 docs/LEGACY_AUDIT.md      evidence-based disposition of the old prototype
 docs/ROADMAP.md           staged validation plan

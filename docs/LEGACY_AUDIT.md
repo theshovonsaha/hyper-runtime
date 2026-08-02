@@ -17,6 +17,11 @@ table distinguishes reachability from functional enforcement.
 | `@hyper/runtime` | WIRED | Policy begins at `packages/runtime/src/policy.ts:38`; runtime at `packages/runtime/src/runtime.ts:46` | Policy, false-success, ledger, and eval tests |
 | `@hyper/capability-memory` | WIRED | Adapter begins at `packages/capability-memory/src/index.ts:21` and is used by all eval conditions | Grant validation and observed-state tests |
 | `@hyper/evals` | WIRED | Experiment entrypoint is `packages/evals/src/experiment.ts:284`; root `eval` and `check` scripts invoke its CLI | Acceptance gate and raw result generation |
+| Legacy session/run UI APIs | MIGRATED WITH NARROWER SEMANTICS | `packages/cli/src/server.ts` exposes persistent sessions, canonical run trails, attribution, and a scorecard over the evaluated runner | New Morph UI consumes these APIs; legacy kernel remains isolated |
+| Legacy memory writer | REPLACED | `packages/cli/src/server.ts` commits only capability-verified terminal observations through `memory.verified_outcome_committed` | No intermediate reasoning or unverified response prose is eligible |
+| Legacy custom HTTP tools | REPLACED WITH BOUNDED GET | `packages/capabilities/src/http.ts` enforces preconfigured host and path prefixes on requests and redirects | Tools cannot add hosts beyond `HYPER_ALLOWED_HOSTS` and remain policy-gated |
+| Legacy schedules | MIGRATED WITH SAME-KERNEL EXECUTION | `packages/cli/src/server.ts` dispatches interactive and scheduled objectives through `/api/runtime/run` | Completed state survives restart; in-flight crash resume remains unimplemented |
+| Legacy workflow templates, credentials, and channels | NOT MIGRATED | These features depend on broader authority and external secret/channel contracts absent from the evaluated core | Keep isolated until each has an explicit capability, verifier, and threat-model fixture |
 
 The mechanical import audit also identifies `knowledge/knowledge.ts`,
 `knowledge/wiki.ts`, `tools/custom.ts`, `domain/career/types.ts`, and several

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import { api } from '../api';
 
 const ShovsContext = createContext(null);
@@ -14,6 +14,8 @@ export function ShovsProvider({ children }) {
   const [providersAvailable, setProvidersAvailable] = useState({});
   const [models, setModels] = useState({});
   const [currentModel, setCurrentModel] = useState('');
+  const [profile, setProfileState] = useState(localStorage.getItem('hyper_profile') || 'inspect');
+  const [profiles, setProfiles] = useState(['inspect', 'workspace']);
   
   const [messages, setMessages] = useState([]);
   const [events, setEvents] = useState([]);
@@ -26,6 +28,15 @@ export function ShovsProvider({ children }) {
         setProvidersAvailable(cfg.providers_available || {});
         setProvider(cfg.provider);
         setModels(cfg.models || {});
+        setCurrentModel(cfg.model || '');
+        setProfiles(cfg.profiles || ['inspect', 'workspace']);
+        if (cfg.profiles?.length) {
+          setProfileState(current => {
+            const next = cfg.profiles.includes(current) ? current : cfg.profiles[0];
+            localStorage.setItem('hyper_profile', next);
+            return next;
+          });
+        }
         
         // Load history if we have a session
         if (sessionId) {
@@ -36,7 +47,7 @@ export function ShovsProvider({ children }) {
       }
     }
     boot();
-  }, []);
+  }, [sessionId]);
 
   const loadHistory = async (sid) => {
     try {
@@ -64,6 +75,11 @@ export function ShovsProvider({ children }) {
     setEvents([]);
   };
 
+  const setProfile = (value) => {
+    setProfileState(value);
+    localStorage.setItem('hyper_profile', value);
+  };
+
   const sendMessage = async (text, files = [], images = []) => {
     if (!text || running) return;
     setRunning(true);
@@ -78,10 +94,13 @@ export function ShovsProvider({ children }) {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({
           message: text, session_id: sessionId, provider: provider,
-          model: currentModel || undefined,
-          gate: gateOn, auto: autoOn, level: level, files, images,
+          model: currentModel || undefined, profile, files, images,
         }),
       });
+
+      if (!resp.ok || !resp.body) {
+        throw new Error(`Runtime returned HTTP ${resp.status}`);
+      }
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
@@ -105,6 +124,11 @@ export function ShovsProvider({ children }) {
       }
     } catch (e) {
       console.error("Chat error", e);
+      setMessages(prev => [...prev, {
+        id: `runtime-error:${Date.now()}`,
+        role: 'assistant',
+        content: `Runtime connection failed: ${e.message}`,
+      }]);
     } finally {
       setRunning(false);
       // Reload history to ensure we have the full clean final state
@@ -123,8 +147,13 @@ export function ShovsProvider({ children }) {
     }
     if (frame.kind === "event") {
       setEvents(prev => [...prev, frame.event]);
-      // Here we would ideally parse the event to update the currently streaming assistant message
-      // In a robust implementation, we would maintain a `streamingMessage` state.
+      if (frame.event?.type === 'respond.final' && frame.event.payload?.text) {
+        setMessages(prev => [...prev, {
+          id: `${frame.event.run_id}:assistant`,
+          role: 'assistant',
+          content: frame.event.payload.text,
+        }]);
+      }
     }
   };
 
@@ -137,6 +166,7 @@ export function ShovsProvider({ children }) {
       level, setLevel,
       provider, setProvider, providersAvailable,
       models, currentModel, setCurrentModel,
+      profile, setProfile, profiles,
       messages, events,
       sendMessage
     }}>

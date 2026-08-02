@@ -29,7 +29,7 @@ import {
   type ModelDriver,
   type ModelProposalScope,
 } from '@hyper/model';
-import { CapabilityRegistry, WorkflowRunner } from '@hyper/workflow';
+import { CapabilityRegistry, WorkflowRunner, type WorkflowDefinition } from '@hyper/workflow';
 
 const now = '2026-07-24T12:00:00.000Z';
 
@@ -113,6 +113,69 @@ describe('dynamic context compilation', () => {
         authority: 'constraint',
       })],
     })).toThrow(ContextBudgetExceededError);
+  });
+
+  test('collapses duplicate dynamic evidence without collapsing authoritative records', () => {
+    const packet = new DynamicContextCompiler().compile({
+      runId: 'run:deduplicate',
+      phase: 'act',
+      objective: 'Use each evidence representation once.',
+      constraints: [],
+      strategyId: 'strategy:deduplicate',
+      focusTags: [],
+      tokenBudget: 200,
+      now,
+      sources: [
+        contextSource({
+          id: 'constraint:first',
+          content: 'Preserve the workspace boundary.',
+          kind: 'constraint',
+          authority: 'constraint',
+          provenance: ['policy:first'],
+        }),
+        contextSource({
+          id: 'constraint:second',
+          content: 'Preserve the workspace boundary.',
+          kind: 'constraint',
+          authority: 'constraint',
+          provenance: ['policy:second'],
+        }),
+        contextSource({
+          id: 'evidence:canonical',
+          content: 'The observed value is 42.',
+          provenance: ['observation:canonical'],
+          priority: 60,
+        }),
+        contextSource({
+          id: 'history:duplicate',
+          content: '  The observed value is 42.  ',
+          provenance: ['conversation:duplicate'],
+          priority: 10,
+        }),
+      ],
+    });
+
+    expect(packet.items.map(item => item.sourceId)).toEqual([
+      'constraint:first',
+      'constraint:second',
+      'evidence:canonical',
+    ]);
+    expect(packet.exclusions).toContainEqual({
+      sourceId: 'history:duplicate',
+      reason: 'duplicate',
+      representedBySourceId: 'evidence:canonical',
+    });
+    expect(packet.items.find(item => item.sourceId === 'evidence:canonical')).toMatchObject({
+      collapsedSourceIds: ['history:duplicate'],
+      provenance: ['observation:canonical', 'conversation:duplicate'],
+    });
+    expect(packet.audit).toMatchObject({
+      sourcesConsidered: 4,
+      sourcesIncluded: 3,
+      stableItems: 2,
+      dynamicItems: 1,
+    });
+    expect(packet.audit.duplicateTokensRemoved).toBeGreaterThan(0);
   });
 
   test('keeps raw conversation separate from provenance-linked curation', () => {
@@ -264,25 +327,26 @@ function workflowFixture(proposals: WorkflowProposal[]) {
     observedAt: now,
     expiresAt: '2026-07-24T12:10:00.000Z',
   }];
+  const definition: WorkflowDefinition = {
+    runId: 'run:adaptive',
+    intent,
+    conditions,
+    constraints: ['Stay within workspace/**.', 'Completion requires observed evidence.'],
+    sources: [contextSource({
+      id: 'goal:workflow',
+      content: intent.objective,
+      kind: 'goal',
+      authority: 'directive',
+      tags: ['workspace'],
+      priority: 100,
+    })],
+    initialStrategyId: 'strategy:direct',
+    tokenBudget: 1_000,
+    maxSteps: 8,
+  };
   return {
     capability,
-    definition: {
-      runId: 'run:adaptive',
-      intent,
-      conditions,
-      constraints: ['Stay within workspace/**.', 'Completion requires observed evidence.'],
-      sources: [contextSource({
-        id: 'goal:workflow',
-        content: intent.objective,
-        kind: 'goal',
-        authority: 'directive',
-        tags: ['workspace'],
-        priority: 100,
-      })],
-      initialStrategyId: 'strategy:direct',
-      tokenBudget: 1_000,
-      maxSteps: 8,
-    },
+    definition,
     runner: new WorkflowRunner({
       model: new ScriptedModelDriver(proposals),
       capabilities: new CapabilityRegistry().register(capability),
@@ -419,7 +483,7 @@ describe('causal workflow and pivot control', () => {
       {
         kind: 'complete',
         strategyId: 'strategy:direct',
-        evidenceRefs: ['workspace_value_observed'],
+        evidenceRefs: ['observation:proposal:actual-work'],
       },
     ]);
     const result = await fixture.runner.run(fixture.definition);
@@ -430,6 +494,55 @@ describe('causal workflow and pivot control', () => {
       fixture.runner.ledger.all().filter(event => event.type === 'workflow.completion_checked')
         .map(event => event.payload.passed),
     ).toEqual([false, true]);
+  });
+
+  test('stops an identical rejected completion loop deterministically', async () => {
+    const fixture = workflowFixture([
+      {
+        kind: 'complete',
+        strategyId: 'strategy:direct',
+        evidenceRefs: ['workspace_value_observed'],
+      },
+      {
+        kind: 'complete',
+        strategyId: 'strategy:direct',
+        evidenceRefs: ['workspace_value_observed'],
+      },
+    ]);
+    const result = await fixture.runner.run(fixture.definition);
+
+    expect(result.status).toBe('blocked');
+    expect(result.steps).toHaveLength(2);
+    expect(result.reasonCodes).toContain('REPEATED_COMPLETION_REJECTION');
+  });
+
+  test('pauses for a proposal-scoped approval and continues after approval', async () => {
+    const riskyAction = action('proposal:risky-write', 'strategy:direct', 'apply');
+    if (riskyAction.kind !== 'action') throw new Error('expected action fixture');
+    riskyAction.action.risk = 2;
+    const fixture = workflowFixture([
+      riskyAction,
+      {
+        kind: 'complete',
+        strategyId: 'strategy:direct',
+        evidenceRefs: ['workspace_value_observed'],
+      },
+    ]);
+    fixture.definition.intent.approvalAboveRisk = 2;
+    fixture.definition.requestApprovalFor = async proposalId => ({
+      id: 'approval:risky-write',
+      proposalId,
+      principalId: 'agent:workflow',
+      issuedAt: now,
+      expiresAt: '2026-07-24T12:10:00.000Z',
+    });
+
+    const result = await fixture.runner.run(fixture.definition);
+
+    expect(result.status).toBe('completed');
+    expect(fixture.runner.ledger.all().map(event => event.type)).toContain('workflow.approval_requested');
+    expect(fixture.runner.ledger.all().find(event => event.type === 'workflow.approval_resolved')?.payload)
+      .toMatchObject({ proposalId: 'proposal:risky-write', approved: true });
   });
 
   test('rejects cyclic strategy pivots', async () => {
@@ -641,6 +754,7 @@ describe('canonical model boundary', () => {
     }], {
       intentId: 'intent:scoped',
       principalId: 'agent:scoped',
+      authorizedCapabilityIds: ['workspace.file.read'],
       requiredConditionIds: ['condition:current'],
       requiredEvidence: ['file_read'],
       riskBudget: 2,
@@ -658,6 +772,71 @@ describe('canonical model boundary', () => {
     });
     expect(result.requestAudit?.promptCharacters).toBeGreaterThan(0);
     expect(result.requestAudit?.toolSchemaCharacters).toBeGreaterThan(0);
+    expect(result.requestAudit?.systemCharacters).toBeGreaterThan(0);
+    expect(result.requestAudit?.contextCharacters).toBeGreaterThan(0);
     expect(result.requestAudit?.promptHash).toHaveLength(64);
+    expect(result.requestAudit?.systemHash).toHaveLength(64);
+    expect(result.requestAudit?.contextHash).toHaveLength(64);
+  });
+
+  test('synthesizes a natural answer only from supplied verified evidence', async () => {
+    const driver = new CanonicalModelDriver({
+      id: 'test-provider',
+      model: 'test-model',
+      async generate() {
+        return {
+          text: JSON.stringify({
+            answer: 'The requested file now contains the verified value.',
+            evidenceRefs: ['observation:write'],
+            claims: [{
+              text: 'The requested file contains the verified value.',
+              evidenceRefs: ['observation:write'],
+            }],
+            caveats: [],
+          }),
+          usage: { inputTokens: 2, outputTokens: 3 },
+        };
+      },
+    });
+    const result = await driver.synthesize({
+      objective: 'Write a verified value.',
+      completionCriteria: ['The file contains verified.'],
+      requiredEvidence: ['workspace_value_observed'],
+      observations: [{
+        target: 'workspace/result.txt',
+        value: 'verified',
+        evidenceRefs: ['observation:write'],
+        verificationCodes: ['FILE_CONTENT_OBSERVED'],
+      }],
+    });
+
+    expect(result.answer).toContain('verified value');
+    expect(result.evidenceRefs).toEqual(['observation:write']);
+
+    const invalid = new CanonicalModelDriver({
+      id: 'test-provider',
+      model: 'test-model',
+      async generate() {
+        return {
+          text: JSON.stringify({
+            answer: 'Unsupported.',
+            evidenceRefs: ['invented:evidence'],
+            claims: [{ text: 'Unsupported.', evidenceRefs: ['invented:evidence'] }],
+          }),
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    });
+    expect(invalid.synthesize({
+      objective: 'Verify.',
+      completionCriteria: [],
+      requiredEvidence: [],
+      observations: [{
+        target: 'workspace/result.txt',
+        value: 'verified',
+        evidenceRefs: ['observation:write'],
+        verificationCodes: ['FILE_CONTENT_OBSERVED'],
+      }],
+    })).rejects.toThrow('outside verified observations');
   });
 });

@@ -134,7 +134,32 @@ that their natural-language instruction caused an improvement.
 
 Loads a versioned task, registers only opted-in capabilities, selects a model
 driver, persists the ledger, and prints a workflow receipt. It is a composition
-surface, not a policy bypass.
+surface, not a policy bypass. Its local HTTP service exposes the same runner to
+the operator UI and adapts canonical ledger events into display-only SSE
+projections; the UI event stream is not a second source of truth. A separate
+atomic operator store indexes sessions, run metadata, active verified-outcome
+memory, bounded HTTP-tool definitions, and schedules for local product use.
+Run effects and verification remain canonical only in the per-run hash chain;
+operator configuration cannot grant capability beyond server allowlists.
+
+The operator store may also hold structured correction traces in the form
+`observed -> mismatch -> correction -> reusable rule`. These are inert,
+reviewable experiment candidates. Even an `accepted_for_experiment` candidate
+does not enter a workflow definition or gain directive authority; activation
+still requires an explicit human-authored `CorrectionRule` at the task boundary.
+
+The HTTP composition surface owns a server-configured provider registry. It
+probes model inventories for Ollama, Anthropic, and one OpenAI-compatible
+endpoint and exposes only sanitized connection state to the UI. A run may
+select a provider and model from that registry, but cannot supply a base URL or
+credential name; transport authority therefore remains server-owned. Scheduled
+runs persist the same provider/model selection as interactive runs.
+
+Natural response synthesis happens after verified completion. The model sees
+only verified observations and must return evidence references from that set.
+The response is a provenance-linked presentation layer, not a new verifier and
+not authority to execute another effect. Only verified observations—not answer
+prose or intermediate reasoning—are eligible for durable memory.
 
 ### `@hyper/evals`
 

@@ -1,16 +1,28 @@
 import { access } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { createServer as createTcpServer } from 'node:net'
 import path from 'node:path'
+import { loadEnvFile } from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const backendDir = process.env.SHOVS_BACKEND_DIR
-  ? path.resolve(process.env.SHOVS_BACKEND_DIR)
-  : path.resolve(frontendDir, '..', '..', 'Kitchen---Transparent-Language-Runtime')
-const apiTarget = process.env.VITE_API_TARGET || 'http://127.0.0.1:8791'
-const healthUrl = new URL('/api/config', apiTarget).href
+const defaultBackendDir = path.resolve(frontendDir, '..', '..', '..')
+for (const envPath of [
+  path.join(defaultBackendDir, '.env'),
+  path.join(defaultBackendDir, 'ui', '.env'),
+  path.join(frontendDir, '.env'),
+  path.join(frontendDir, '.env.local'),
+]) {
+  try { loadEnvFile(envPath) } catch { /* Optional environment layers. */ }
+}
+const backendDir = process.env.HYPER_RUNTIME_DIR
+  ? path.resolve(process.env.HYPER_RUNTIME_DIR)
+  : defaultBackendDir
+const backendPort = process.env.HYPER_PORT || process.env.SHOVS_V2_PORT || '8791'
+let apiTarget = process.env.VITE_API_TARGET || `http://127.0.0.1:${backendPort}`
+const expectedServiceRevision = 'provider-registry-v2'
 
 let backend = null
 let vite = null
@@ -25,13 +37,31 @@ async function exists(file, mode = constants.F_OK) {
   }
 }
 
-async function backendReady() {
+async function backendConfig() {
   try {
-    const response = await fetch(healthUrl, { signal: AbortSignal.timeout(650) })
-    return response.ok
+    const response = await fetch(new URL('/api/config', apiTarget), {
+      signal: AbortSignal.timeout(650),
+    })
+    return response.ok ? await response.json() : null
   } catch {
-    return false
+    return null
   }
+}
+
+async function backendReady() {
+  return (await backendConfig())?.service_revision === expectedServiceRevision
+}
+
+async function openPort(start) {
+  for (let port = start; port < start + 100; port += 1) {
+    const available = await new Promise(resolvePort => {
+      const server = createTcpServer()
+      server.once('error', () => resolvePort(false))
+      server.listen(port, '127.0.0.1', () => server.close(() => resolvePort(true)))
+    })
+    if (available) return port
+  }
+  throw new Error(`No free runtime port found after ${start}.`)
 }
 
 async function waitForBackend(timeoutMs = 15_000) {
@@ -44,28 +74,32 @@ async function waitForBackend(timeoutMs = 15_000) {
 }
 
 async function startBackend() {
-  if (await backendReady()) {
+  const existing = await backendConfig()
+  if (existing?.service_revision === expectedServiceRevision) {
     console.log(`✓ runtime already available at ${apiTarget}`)
     return
   }
 
-  const candidates = [
-    path.join(backendDir, 'venv', 'bin', 'python'),
-    path.join(backendDir, '.venv', 'bin', 'python'),
-  ]
-  const python = (await Promise.all(candidates.map(async file => (await exists(file, constants.X_OK)) ? file : null))).find(Boolean)
-  const entrypoint = path.join(backendDir, 'start_server.py')
+  if (existing) {
+    const requested = Number(new URL(apiTarget).port || 8791)
+    const fallbackPort = await openPort(requested + 1)
+    console.warn(`⚠ incompatible runtime already uses ${apiTarget}; starting current runtime on ${fallbackPort}`)
+    apiTarget = `http://127.0.0.1:${fallbackPort}`
+    process.env.VITE_API_TARGET = apiTarget
+  }
 
-  if (!python || !(await exists(entrypoint))) {
+  const entrypoint = path.join(backendDir, 'packages', 'cli', 'src', 'server.ts')
+
+  if (!(await exists(entrypoint))) {
     console.warn(`⚠ backend not found at ${backendDir}`)
-    console.warn('  Set SHOVS_BACKEND_DIR, or run the frontend alone with: npm run dev:frontend')
+    console.warn('  Set HYPER_RUNTIME_DIR, or run the frontend alone with: npm run dev:frontend')
     return
   }
 
-  console.log(`→ starting transparent runtime at ${apiTarget}`)
-  backend = spawn(python, [entrypoint], {
+  console.log(`→ starting evaluated Hyper runtime at ${apiTarget}`)
+  backend = spawn('bun', [entrypoint], {
     cwd: backendDir,
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: { ...process.env, HYPER_PORT: new URL(apiTarget).port || '8791' },
     stdio: 'inherit',
   })
   backend.on('exit', code => {
@@ -73,7 +107,7 @@ async function startBackend() {
   })
 
   if (!(await waitForBackend())) {
-    console.warn(`⚠ runtime did not become ready at ${healthUrl}; Vite will still start in demo fallback mode`)
+    console.warn(`⚠ evaluated runtime did not become ready at ${new URL('/api/config', apiTarget)}; Vite will still start in demo fallback mode`)
   } else {
     console.log('✓ runtime ready')
   }
@@ -82,12 +116,20 @@ async function startBackend() {
 async function shutdown() {
   if (stopping) return
   stopping = true
+  if (backend && !backend.killed) {
+    backend.kill('SIGTERM')
+    await Promise.race([
+      new Promise(resolve => backend.once('exit', resolve)),
+      new Promise(resolve => setTimeout(resolve, 1_500)),
+    ])
+    if (backend.exitCode == null) backend.kill('SIGKILL')
+  }
   await vite?.close()
-  if (backend && !backend.killed) backend.kill('SIGTERM')
+  process.exit(0)
 }
 
-process.on('SIGINT', () => void shutdown())
-process.on('SIGTERM', () => void shutdown())
+process.once('SIGINT', () => void shutdown())
+process.once('SIGTERM', () => void shutdown())
 
 await startBackend()
 vite = await createServer({ root: frontendDir })

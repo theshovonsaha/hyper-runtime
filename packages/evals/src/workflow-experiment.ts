@@ -25,6 +25,7 @@ interface ContextScenario {
   >>;
   expectedIncluded: string[];
   expectedExcluded: string[];
+  expectedExclusionReasons?: Record<string, string>;
   expectedNonInstructionEligible: string[];
 }
 
@@ -51,6 +52,8 @@ export interface ContextTrial {
   actualIncluded: string[];
   expectedExcluded: string[];
   actualExcluded: string[];
+  expectedExclusionReasons: Record<string, string>;
+  actualExclusionReasons: Record<string, string>;
   expectedNonInstructionEligible: string[];
   actualNonInstructionEligible: string[];
   passed: boolean;
@@ -130,8 +133,15 @@ function runContextTrial(scenario: ContextScenario, fixedNow: string): ContextTr
   const actualNonInstructionEligible = packet.items
     .filter(item => !item.instructionEligible)
     .map(item => item.sourceId);
+  const actualExclusionReasons = Object.fromEntries(
+    packet.exclusions.map(exclusion => [exclusion.sourceId, exclusion.reason]),
+  );
+  const expectedExclusionReasons = scenario.expectedExclusionReasons ?? {};
   const passed = scenario.expectedIncluded.every(id => actualIncluded.includes(id))
     && scenario.expectedExcluded.every(id => packet.excludedSourceIds.includes(id))
+    && Object.entries(expectedExclusionReasons).every(
+      ([id, reason]) => actualExclusionReasons[id] === reason,
+    )
     && scenario.expectedNonInstructionEligible.every(id =>
       actualNonInstructionEligible.includes(id),
     );
@@ -141,6 +151,8 @@ function runContextTrial(scenario: ContextScenario, fixedNow: string): ContextTr
     actualIncluded,
     expectedExcluded: scenario.expectedExcluded,
     actualExcluded: packet.excludedSourceIds,
+    expectedExclusionReasons,
+    actualExclusionReasons,
     expectedNonInstructionEligible: scenario.expectedNonInstructionEligible,
     actualNonInstructionEligible,
     passed,

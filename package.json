@@ -11,12 +11,16 @@
   "scripts": {
     "setup": "bun install && bun run check",
     "start": "bun run hyper",
+    "dev": "npm --prefix ui/morph-ui/shovs-frontend run dev",
+    "dev:frontend": "npm --prefix ui/morph-ui/shovs-frontend run dev:frontend",
+    "dev:backend": "bun run runtime:serve",
     "test": "bun test tests",
     "test:legacy": "bun scripts/test_hyper_runtime.ts",
     "eval": "bun packages/evals/src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check": "bun run typecheck && bun test tests && bun run eval",
     "hyper": "bun packages/cli/src/cli.ts",
+    "runtime:serve": "bun packages/cli/src/server.ts",
     "release:check": "bun run check && bun packages/cli/src/cli.ts --help",
     "legacy:start": "bun run src/index.ts",
     "legacy:dev": "bun --watch src/index.ts"
