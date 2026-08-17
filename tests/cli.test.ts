@@ -3,17 +3,35 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  assessOperatorClarification,
+  adaptLedgerEvent,
   createRuntimeHttpHandler,
+  JsonOperatorStore,
+  ingestSessionFile,
+  projectRunTrail,
+  projectRuntimeGraph,
   replayLedger,
   runtimeHttpConfig,
   runTask,
   type HyperTaskFile,
 } from '@hyper/cli';
-import type { WorkflowProposal } from '@hyper/contracts';
+import { CONTRACT_VERSION, type LedgerEvent, type WorkflowProposal } from '@hyper/contracts';
 import type { ModelDriver } from '@hyper/model';
 
 const roots: string[] = [];
 const now = '2026-07-24T12:00:00.000Z';
+
+function canonicalEvent(type: string, payload: Record<string, unknown>): LedgerEvent {
+  return {
+    version: CONTRACT_VERSION,
+    runId: 'run:display-test',
+    sequence: 1,
+    type,
+    payload,
+    previousHash: 'previous',
+    hash: 'current',
+  };
+}
 
 function temporaryRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'hyper-cli-test-'));
@@ -26,6 +44,518 @@ afterEach(() => {
 });
 
 describe('practical CLI workflow', () => {
+  test('ingests session files and fuses semantic, temporal, relationship, and lexical retrieval without cross-session bleed', async () => {
+    const root = temporaryRoot();
+    const store = new JsonOperatorStore(join(root, 'operator.json'));
+    store.ensureSession('session:a', now, 'A');
+    store.ensureSession('session:b', now, 'B');
+    const embeddingProvider = {
+      model: 'test-embedding',
+      async embed(inputs: string[]) {
+        return inputs.map(input => input.includes('policy') || input.includes('authorization')
+          ? [1, 0, 0]
+          : [0, 1, 0]);
+      },
+    };
+    const ingested = await ingestSessionFile({
+      sessionId: 'session:a',
+      ingestionId: 'ingestion:a',
+      file: new File([
+        'Runtime policy requires authorization evidence before effects.\n\n'
+        + 'Runtime context connects policy decisions to verified observations.',
+      ], 'runtime.md', { type: 'text/markdown' }),
+      storageRoot: join(root, 'files'),
+      createdAt: now,
+      embeddingProvider,
+    });
+    store.addSessionFile(ingested.record, ingested.chunks);
+    expect(ingested.record).toMatchObject({ status: 'ready', retrievalMode: 'hybrid', embeddingModel: 'test-embedding' });
+    const results = store.searchKnowledge('session:a', 'authorization policy', {
+      queryEmbedding: [1, 0, 0],
+      now,
+    });
+    expect(results[0]).toMatchObject({
+      fileName: 'runtime.md',
+      retrievalMode: 'hybrid',
+      reasons: expect.arrayContaining(['lexical-match', 'semantic-match', 'relationship-expansion']),
+    });
+    expect(results[0]!.provenance).toContain('ingestion:a');
+    expect(store.searchKnowledge('session:b', 'authorization policy', { queryEmbedding: [1, 0, 0], now })).toEqual([]);
+
+    const degraded = await ingestSessionFile({
+      sessionId: 'session:b',
+      ingestionId: 'ingestion:b',
+      file: new File(['Lexical fallback remains available.'], 'fallback.txt', { type: 'text/plain' }),
+      storageRoot: join(root, 'files'),
+      createdAt: now,
+    });
+    expect(degraded.record).toMatchObject({ status: 'limited', retrievalMode: 'lexical' });
+    expect(degraded.record.limitation).toContain('No embedding model is configured');
+  });
+
+  test('uploads, searches, graphs, and deletes session-owned files through the HTTP boundary', async () => {
+    const root = temporaryRoot();
+    const ledgerDirectory = join(root, 'ledgers');
+    mkdirSync(ledgerDirectory, { recursive: true });
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory,
+      sessionFileDirectory: join(root, 'session-files'),
+      provider: 'ollama',
+      model: 'test-model',
+      allowedExecutables: [],
+      allowedHosts: [],
+      embeddingProvider: {
+        model: 'fixture-embedding',
+        async embed(inputs) { return inputs.map(() => [1, 0]); },
+      },
+    });
+    await handler(new Request('http://runtime.local/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'session:upload' }),
+    }));
+    const form = new FormData();
+    form.append('files', new File(['Temporal graph memory for the coding runtime.'], 'knowledge.md', { type: 'text/markdown' }));
+    const upload = await handler(new Request('http://runtime.local/api/sessions/session%3Aupload/files', { method: 'POST', body: form }));
+    expect(upload.status).toBe(201);
+    const uploaded = await upload.json() as { files: Array<{ id: string; ingestionId: string; retrievalMode: string; sha256: string; storagePath?: string }> };
+    expect(uploaded.files[0]).toMatchObject({ retrievalMode: 'hybrid' });
+    expect(uploaded.files[0]!.storagePath).toBeUndefined();
+    expect(readFileSync(join(ledgerDirectory, `${uploaded.files[0]!.ingestionId}.jsonl`), 'utf8')).toContain('knowledge.index_projected');
+
+    const search = await handler(new Request('http://runtime.local/api/sessions/session%3Aupload/knowledge/search?q=graph%20runtime'));
+    expect(await search.json()).toMatchObject({
+      embeddingAvailable: true,
+      results: [{ fileName: 'knowledge.md', retrievalMode: 'hybrid' }],
+    });
+    const graph = await handler(new Request('http://runtime.local/api/sessions/session%3Aupload/knowledge/graph'));
+    expect(await graph.json()).toMatchObject({
+      session_id: 'session:upload',
+      files: [{ name: 'knowledge.md' }],
+      chunks: [{ content: 'Temporal graph memory for the coding runtime.' }],
+    });
+    const remove = await handler(new Request(
+      `http://runtime.local/api/sessions/session%3Aupload/files/${encodeURIComponent(uploaded.files[0]!.id)}`,
+      { method: 'DELETE' },
+    ));
+    expect(await remove.json()).toMatchObject({ deleted: true });
+    const listed = await handler(new Request('http://runtime.local/api/sessions/session%3Aupload/files'));
+    expect(await listed.json()).toMatchObject({ files: [] });
+  });
+
+  test('pins one embedding space per session and serves bounded universal and session previews', async () => {
+    const root = temporaryRoot();
+    writeFileSync(join(root, 'runtime.ts'), 'export const runtime = "coherent";\n');
+    const provider = (model: string) => ({ model, async embed(inputs: string[]) { return inputs.map(() => [1, 0, 0]); } });
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'),
+      sessionFileDirectory: join(root, 'session-files'),
+      provider: 'ollama', model: 'fixture', allowedExecutables: [], allowedHosts: [],
+      embeddingProfiles: [
+        { id: 'quality', label: 'Quality', model: 'embed-quality', provider: provider('embed-quality'), dimensions: 3 },
+        { id: 'fast', label: 'Fast', model: 'embed-fast', provider: provider('embed-fast'), dimensions: 3 },
+      ],
+    });
+    await handler(new Request('http://runtime.local/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'session:pinned' }),
+    }));
+    const select = await handler(new Request('http://runtime.local/api/sessions/session%3Apinned/embedding', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profile_id: 'quality' }),
+    }));
+    expect(select.status).toBe(200);
+    const form = new FormData();
+    form.append('files', new File(['Pinned vector space.'], 'notes.md', { type: 'text/markdown' }));
+    const upload = await handler(new Request('http://runtime.local/api/sessions/session%3Apinned/files', { method: 'POST', body: form }));
+    const uploaded = await upload.json() as { files: Array<{ id: string; embeddingProfileId: string }> };
+    expect(uploaded.files[0]?.embeddingProfileId).toBe('quality');
+    const change = await handler(new Request('http://runtime.local/api/sessions/session%3Apinned/embedding', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profile_id: 'fast' }),
+    }));
+    expect(change.status).toBe(409);
+    expect(await change.json()).toMatchObject({ code: 'EMBEDDING_PROFILE_LOCKED' });
+
+    const workspace = await handler(new Request('http://runtime.local/api/filesystem?path=workspace%2F'));
+    const workspaceBody = await workspace.json() as { entries: Array<{ name: string; previewKind?: string; path: string }> };
+    expect(workspaceBody.entries.find(item => item.name === 'runtime.ts')).toMatchObject({ previewKind: 'code', path: 'workspace/runtime.ts' });
+    const preview = await handler(new Request('http://runtime.local/api/filesystem/preview?path=workspace%2Fruntime.ts'));
+    expect(await preview.json()).toMatchObject({ previewKind: 'code', content: 'export const runtime = "coherent";\n' });
+    const sessionPreview = await handler(new Request(`http://runtime.local/api/sessions/session%3Apinned/files/${encodeURIComponent(uploaded.files[0]!.id)}/preview`));
+    expect(await sessionPreview.json()).toMatchObject({ scope: 'session', previewKind: 'markdown', content: 'Pinned vector space.' });
+  });
+
+  test('projects canonical context, proposals, capabilities, and verification as one linked graph', () => {
+    const session = {
+      id: 'session:graph',
+      title: 'Graph session',
+      createdAt: now,
+      updatedAt: now,
+      messages: [{ id: 'message:graph', role: 'user' as const, content: 'Inspect the report.', at: now, runId: 'run:graph' }],
+    };
+    const run = {
+      id: 'run:graph', sessionId: session.id, objective: 'Inspect the report.', status: 'completed',
+      profile: 'inspect', provider: 'scripted', startedAt: now, endedAt: now, evidenceRefs: ['evidence:report'],
+    };
+    const event = (sequence: number, type: string, payload: Record<string, unknown>): LedgerEvent => ({
+      ...canonicalEvent(type, payload), runId: run.id, sequence, hash: `hash:${sequence}`,
+    });
+    const events = [
+      event(0, 'context.compiled', {
+        packetId: 'packet:graph', phase: 'act', step: 1, objective: run.objective,
+        legalCapabilityIds: ['workspace.file.read'], estimatedTokens: 84,
+        items: [{ sourceId: 'source:directive', title: 'Inspection rule', content: 'Read before completion.', authority: 'directive', validity: 'active' }],
+      }),
+      event(1, 'model.proposed', {
+        packetId: 'packet:graph',
+        proposal: { kind: 'action', hypothesis: 'Read the report.', action: { id: 'proposal:graph', capabilityId: 'workspace.file.read', target: 'workspace/report.txt', risk: 0, args: {} } },
+      }),
+      event(2, 'policy.decided', { proposalId: 'proposal:graph', disposition: 'allow' }),
+      event(3, 'action.verified', {
+        proposalId: 'proposal:graph', capabilityId: 'workspace.file.read', passed: true,
+        reasonCodes: ['OBSERVED_VALUE_MATCH'], evidence: [{ id: 'evidence:report', source: 'observation' }],
+      }),
+      event(4, 'workflow.completion_checked', {
+        passed: true, reasonCodes: ['REQUIRED_EVIDENCE_PRESENT'], evidence: [{ id: 'evidence:report', source: 'observation' }],
+      }),
+    ];
+    const graph = projectRuntimeGraph({
+      session,
+      runs: [{ run, events }],
+      memory: [{
+        id: 'memory:graph', sourceRunId: run.id, sessionId: session.id, content: 'The report was inspected.',
+        evidenceRefs: ['evidence:report'], createdAt: now, status: 'active', kind: 'outcome',
+      }],
+      query: 'workspace.file.read',
+    });
+    const types = new Set(graph.nodes.map(node => node.type));
+    expect(types).toEqual(new Set(['session', 'run', 'message', 'memory', 'context', 'source', 'proposal', 'capability', 'verification', 'evidence']));
+    expect(graph.counts).toMatchObject({ contexts: 1, proposals: 1, capabilities: 1, verifications: 2, evidence: 1 });
+    expect(graph.integrity).toMatchObject({ canonical_events: 5, canonical_runs: 1, verified_paths: 2, orphan_edges: 0, truncated: false });
+    expect(graph.integrity.provenance_coverage).toBe(1);
+    expect(graph.nodes.find(node => node.type === 'capability')).toMatchObject({ matched: true, entityId: 'workspace.file.read' });
+    expect(graph.edges.some(edge => edge.type === 'informed_by')).toBeTrue();
+    expect(graph.edges.some(edge => edge.type === 'established_by')).toBeTrue();
+    const ids = new Set(graph.nodes.map(node => node.id));
+    expect(graph.edges.every(edge => ids.has(edge.from) && ids.has(edge.to))).toBeTrue();
+  });
+
+  test('projects canonical events into distinct human-readable titles and causal details', () => {
+    const started = adaptLedgerEvent(canonicalEvent('workflow.started', {
+      objective: 'Inspect the report and verify its result.',
+      maxSteps: 6,
+    }))[0];
+    expect(started).toMatchObject({
+      schema_version: '1.0',
+      id: 'current:run.start',
+      type: 'run.start',
+      state: 'info',
+      lens: 'input',
+      title: 'Run started',
+      timing_source: 'replay_projection',
+      provenance: 'canonical_ledger',
+      canonical_event_id: 'current',
+      canonical_sequence: 1,
+    });
+    expect(started.detail).toContain('Inspect the report');
+    expect(started.detail).toContain('6 bounded steps');
+
+    const policy = adaptLedgerEvent(canonicalEvent('policy.decided', {
+      disposition: 'deny',
+      reasonCodes: ['TARGET_OUTSIDE_INTENT'],
+    }))[0];
+    expect(policy.title).toBe('Action blocked by policy');
+    expect(policy.state).toBe('blocked');
+    expect(policy.lens).toBe('policy');
+    expect(policy.detail).toBe('target outside intent');
+
+    const proposed = adaptLedgerEvent(canonicalEvent('model.proposed', {
+      proposal: {
+        kind: 'action',
+        hypothesis: 'The report can be inspected safely.',
+        action: {
+          id: 'proposal:read',
+          capabilityId: 'workspace.file.read',
+          target: 'workspace/report.txt',
+          args: {},
+          declaredEffects: ['state.read'],
+          risk: 1,
+        },
+      },
+    }));
+    expect(proposed.map(event => event.title)).toEqual([
+      'Model chose the next action',
+      'Reading a workspace file',
+    ]);
+    expect(proposed[1]?.detail).toContain('report.txt');
+    expect(proposed[1]).toMatchObject({
+      id: 'current:tool.call',
+      correlation: { proposal_id: 'proposal:read', capability_id: 'workspace.file.read' },
+    });
+
+    const verified = adaptLedgerEvent(canonicalEvent('action.verified', {
+      capabilityId: 'workspace.file.read',
+      passed: true,
+      reasonCodes: ['OBSERVED_STATE_MATCHES'],
+    }))[0];
+    expect(verified).toMatchObject({
+      title: 'Action outcome verified',
+      detail: 'observed state matches',
+      state: 'success',
+      lens: 'verification',
+    });
+  });
+
+  test('uses conversation context for reversible defaults but preserves material clarification gates', () => {
+    const redundant = assessOperatorClarification({
+      objective: 'full',
+      question: 'What programming language and specific aspect would you like?',
+      reason: 'Clarify preferences.',
+      transcript: 'Operator: Research agent context implementations with commented code.\nOperator: python\nOperator: use your own thinking based on my intent',
+      authorizedCapabilityIds: ['network.web.search'],
+    });
+    expect(redundant).toMatchObject({ allowed: false, reasonCode: 'PREFERENCE_ALREADY_ANSWERED' });
+
+    const material = assessOperatorClarification({
+      objective: 'Inspect the requested file.',
+      question: 'Which file path should I inspect?',
+      reason: 'No target was supplied.',
+      transcript: '',
+      authorizedCapabilityIds: ['workspace.file.read'],
+    });
+    expect(material).toEqual({ allowed: true, reasonCode: 'MATERIAL_OPERATOR_DECISION_REQUIRED' });
+  });
+
+  test('keeps an avoidable clarification inside the live run and continues to verified work', async () => {
+    const root = temporaryRoot();
+    const ledgerDirectory = join(root, 'ledgers');
+    writeFileSync(join(root, 'context.txt'), 'context implementation evidence');
+    let pass = 0;
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory,
+      provider: 'ollama',
+      model: 'test-model',
+      allowedExecutables: [],
+      allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose(_packet, _capabilities, scope) {
+          pass += 1;
+          const proposal: WorkflowProposal = pass === 1 ? {
+            kind: 'ask',
+            strategyId: scope.activeStrategyId,
+            question: 'What specific aspect and programming language should I use?',
+            reason: 'Preferences may be missing.',
+          } : pass === 2 ? {
+            kind: 'action',
+            strategyId: scope.activeStrategyId,
+            hypothesis: 'The bounded context example can be inspected.',
+            expectedObservation: 'The context fixture is observed.',
+            action: {
+              id: 'proposal:context-read', intentId: scope.intentId, principalId: scope.principalId,
+              conditionIds: scope.requiredConditionIds, capabilityId: 'workspace.file.read',
+              target: 'workspace/context.txt', declaredEffects: ['state.read'], risk: 1,
+              expectedEvidence: scope.requiredEvidence, idempotencyKey: 'context-read:one', args: {},
+            },
+          } : {
+            kind: 'complete', strategyId: scope.activeStrategyId, evidenceRefs: scope.requiredEvidence,
+          };
+          return { proposal, usage: { inputTokens: 1, outputTokens: 1, latencyMs: 1 }, model: 'test:clarification-guard' };
+        },
+        async synthesize(request) {
+          const evidenceRefs = request.observations.flatMap(item => item.evidenceRefs);
+          return {
+            answer: 'Python context example prepared from the verified fixture.', evidenceRefs,
+            claims: [{ text: 'The context fixture was inspected.', evidenceRefs }], caveats: [],
+            model: 'test:clarification-synthesis', usage: { inputTokens: 1, outputTokens: 1, latencyMs: 1 },
+          };
+        },
+      }),
+    });
+    const response = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Research agent context implementations with full commented Python examples; use your own thinking.',
+        profile: 'partner',
+      }),
+    }));
+    const frames = (await response.text()).split('\n').filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6)) as Record<string, any>);
+    const displayEvents = frames.filter(frame => frame.kind === 'event').map(frame => frame.event);
+
+    expect(displayEvents.some(event => event.title === 'Skipped an unnecessary clarification')).toBeTrue();
+    expect(displayEvents.some(event => event.type === 'run.pause')).toBeFalse();
+    expect(displayEvents.at(-1)?.type).toBe('run.end');
+    expect(displayEvents.find(event => event.type === 'respond.final')?.payload.text).toContain('Python');
+    const meta = frames.find(frame => frame.kind === 'meta');
+    const canonical = replayLedger(join(ledgerDirectory, `${meta?.run_id}.jsonl`));
+    expect(canonical).toMatchObject({ valid: true, runs: [{ status: 'completed' }] });
+  });
+
+  test('summarizes a replayable UI trail without treating projection time as event time', () => {
+    const events = [
+      canonicalEvent('action.proposed', { proposalId: 'proposal:read' }),
+      canonicalEvent('action.executed', { proposalId: 'proposal:read', capabilityId: 'workspace.file.read', success: true }),
+      canonicalEvent('action.verified', { proposalId: 'proposal:read', passed: true, evidence: [{ id: 'evidence:read' }] }),
+      canonicalEvent('workflow.completion_checked', { passed: true, evidence: [{ id: 'evidence:read' }] }),
+      canonicalEvent('operator.run_finished', { status: 'completed' }),
+    ].map((event, sequence) => ({ ...event, sequence, hash: `event-${sequence}` }));
+    const trail = projectRunTrail(events);
+    expect(trail).toMatchObject({
+      schema_version: '1.0',
+      evidence_class: 'canonical_run_projection',
+      run_id: 'run:display-test',
+      summary: {
+        status: 'completed',
+        canonical_events: 5,
+        actions_proposed: 1,
+        effects_attempted: 1,
+        verified_actions: 1,
+        evidence_refs: 1,
+        completion_verified: true,
+      },
+    });
+    expect(trail.events.every(event => event.timing_source === 'replay_projection')).toBeTrue();
+    expect(trail.events.map(event => event.id)).toEqual([
+      'event-1:tool.result', 'event-2:verify.verdict', 'event-3:verify.verdict', 'event-4:run.end',
+    ]);
+  });
+
+  test('keeps a disconnected event stream from crashing the runtime', async () => {
+    const root = temporaryRoot();
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'),
+      provider: 'ollama',
+      model: 'slow-test-model',
+      allowedExecutables: [],
+      allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose(_packet, _capabilities, scope) {
+          await new Promise(resolve => setTimeout(resolve, 20));
+          return {
+            proposal: {
+              kind: 'ask',
+              strategyId: scope.activeStrategyId,
+              question: 'What should I inspect?',
+              reason: 'disconnect fixture',
+            },
+            usage: { inputTokens: 1, outputTokens: 1, latencyMs: 20 },
+            model: 'test:slow-stream',
+          };
+        },
+      }),
+    });
+    const response = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Start, then disconnect.' }),
+    }));
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    await reader?.read();
+    await reader?.cancel();
+    await new Promise(resolve => setTimeout(resolve, 40));
+
+    const health = await handler(new Request('http://runtime.local/api/health'));
+    expect(health.status).toBe(200);
+  });
+
+  test('isolates verified memory by session and always includes one recent transcript source', async () => {
+    const root = temporaryRoot();
+    const operatorPath = join(root, 'operator.json');
+    const store = new JsonOperatorStore(operatorPath);
+    store.ensureSession('session:a', now, 'Agent A');
+    store.ensureSession('session:b', now, 'Agent B');
+    store.appendMessage('session:b', {
+      id: 'message:b:user',
+      role: 'user',
+      content: 'Keep this recent direction coherent.',
+      at: now,
+      runId: 'run:b:prior',
+    });
+    store.appendMessage('session:b', {
+      id: 'message:b:assistant',
+      role: 'assistant',
+      content: 'I will preserve this direction.',
+      at: now,
+      runId: 'run:b:prior',
+    });
+    store.commitMemory({
+      id: 'verified:a',
+      sourceRunId: 'run:a',
+      sessionId: 'session:a',
+      content: 'Private verified memory for agent A.',
+      evidenceRefs: ['observation:a'],
+      createdAt: now,
+      status: 'active',
+      kind: 'outcome',
+      salience: 0.9,
+    });
+    expect(store.listMemory('session:a')).toHaveLength(1);
+    expect(store.listMemory('session:b')).toHaveLength(0);
+    expect(store.recallMemory('session:a', 'private verified')).toMatchObject([
+      { record: { id: 'verified:a', sessionId: 'session:a' }, reasons: expect.arrayContaining(['query-match']) },
+    ]);
+    expect(store.recallMemory('session:b', 'private verified')).toEqual([]);
+    expect(store.searchSession('session:b', 'recent direction')).toContainEqual(
+      expect.objectContaining({
+        documentId: 'message:b:user', sessionId: 'session:b', provenance: ['message:b:user', 'run:b:prior'],
+      }),
+    );
+    expect(store.searchSession('session:a', 'recent direction')).toEqual([]);
+
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: operatorPath,
+      provider: 'ollama',
+      model: 'test-model',
+      allowedExecutables: [],
+      allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose(_packet, _capabilities, scope) {
+          return {
+            proposal: {
+              kind: 'ask',
+              strategyId: scope.activeStrategyId,
+              question: 'What should I inspect next?',
+              reason: 'fixture pause',
+            },
+            usage: { inputTokens: 1, outputTokens: 1, latencyMs: 1 },
+            model: 'test:session-context',
+          };
+        },
+      }),
+    });
+    const response = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Continue that direction.', session_id: 'session:b' }),
+    }));
+    const frames = (await response.text()).split('\n')
+      .filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6)) as Record<string, any>);
+    const compiled = frames.find(frame => frame.event?.type === 'context.packet');
+    expect(compiled?.event.payload.includedSourceIds)
+      .toContain('history:session:b:recent-transcript');
+    expect(compiled?.event.payload.includedSourceIds)
+      .not.toContain('memory:verified:a');
+    expect(frames.at(-1)?.event.type).toBe('run.pause');
+    const search = await handler(new Request('http://runtime.local/api/sessions/session%3Ab/search?q=recent%20direction'));
+    const searchBody = await search.json() as { results: Array<{ sessionId: string; provenance: string[] }> };
+    expect(searchBody.results.length).toBeGreaterThan(0);
+    expect(searchBody.results.every(result => result.sessionId === 'session:b')).toBeTrue();
+    expect(searchBody.results.some(result => result.provenance.includes('run:b:prior'))).toBeTrue();
+  });
+
   test('runs a versioned task file, writes a real file, and persists replay', async () => {
     const root = temporaryRoot();
     const taskPath = join(root, 'task.json');
@@ -294,13 +824,25 @@ describe('practical CLI workflow', () => {
     const config = await handler(new Request('http://runtime.local/api/config'));
     expect(await config.json()).toMatchObject({
       runtime: 'hyper-evaluated',
-      profiles: ['inspect', 'workspace'],
-      approval_thresholds: { inspect: 5, workspace: 4 },
+      service_revision: 'product-v10',
+      contracts: { canonical_event: CONTRACT_VERSION, ui_event: '1.0', stream: '1.0', runtime_graph: '1.0' },
+      profiles: ['inspect', 'workspace', 'partner'],
+      approval_thresholds: { inspect: 5, workspace: 4, partner: 2 },
       verification: {
         observed_state: true,
         arbitrary_semantic_claims: false,
       },
       memory: { durable_agent_memory: true, commit_policy: 'verified_outcomes_only' },
+      profile_details: {
+        partner: {
+          label: 'Partner · all configured tools',
+          capabilities: ['workspace.file.read', 'workspace.directory.list', 'system.clock.read', 'workspace.file.write', 'session.knowledge.search'],
+        },
+      },
+      model_routing: {
+        modes: ['fallback', 'ping_pong', 'ring', 'ring_pair', 'round_robin'],
+        route_counts: { ping_pong: 2, ring: 3, ring_pair: 4 },
+      },
       features: { bounded_pass_signals: true, correction_candidate_review: true },
     });
 
@@ -325,6 +867,16 @@ describe('practical CLI workflow', () => {
 
     expect(meta?.run_id).toStartWith('run:');
     expect(meta?.model).toBe('operator-selected-model');
+    expect(meta).toMatchObject({
+      stream_version: '1.0',
+      event_schema_version: '1.0',
+      evidence_class: 'canonical_run',
+    });
+    expect(frames.find(frame => frame.kind === 'event')?.event).toMatchObject({
+      schema_version: '1.0',
+      timing_source: 'live_projection',
+      provenance: 'canonical_ledger',
+    });
     expect(eventTypes).toContain('tool.call');
     expect(eventTypes).toContain('tool.result');
     expect(eventTypes).toContain('respond.final');
@@ -335,7 +887,7 @@ describe('practical CLI workflow', () => {
       event: {
         payload: {
           objective: 'Read workspace/input.txt and verify it.',
-          legalCapabilityIds: ['workspace.file.read'],
+        legalCapabilityIds: ['workspace.file.read', 'workspace.directory.list', 'system.clock.read', 'session.knowledge.search'],
           outputContract: ['action', 'pivot', 'ask', 'complete'],
           audit: { sourcesConsidered: 1 },
         },
@@ -354,7 +906,32 @@ describe('practical CLI workflow', () => {
     ));
     expect(((await messages.json()) as { messages: unknown[] }).messages).toHaveLength(2);
     const memory = await handler(new Request('http://runtime.local/api/memory'));
-    expect(((await memory.json()) as { memory: unknown[] }).memory).toHaveLength(1);
+    const memoryBody = (await memory.json()) as { memory: Array<{ id: string; content: string }> };
+    expect(memoryBody.memory).toHaveLength(1);
+    const projection = await handler(new Request(
+      `http://runtime.local/api/runs/${encodeURIComponent(meta?.run_id)}/projection`,
+    ));
+    expect(await projection.json()).toMatchObject({ projection: { status: 'completed', pendingEffects: [] } });
+    const contextView = await handler(new Request(
+      `http://runtime.local/api/runs/${encodeURIComponent(meta?.run_id)}/context`,
+    ));
+    const contextBody = await contextView.json() as { packets: Array<{ items: unknown[]; tool_call?: unknown }> };
+    expect(contextBody.packets.length).toBe(2);
+    expect(contextBody.packets[0]?.items.length).toBeGreaterThan(0);
+    expect(contextBody.packets.some(packet => !!packet.tool_call)).toBeTrue();
+    const memoryGraph = await handler(new Request(
+      `http://runtime.local/api/memory/graph?session_id=${encodeURIComponent(meta?.session_id)}`,
+    ));
+    expect(await memoryGraph.clone().json()).toMatchObject({
+      evidence_class: 'canonical_run_projection',
+      counts: { memories: 1, active_memories: 1, runs: 1, contexts: 2 },
+      integrity: { canonical_runs: 1, orphan_edges: 0, truncated: false },
+    });
+    const edited = await handler(new Request(
+      `http://runtime.local/api/memory/${encodeURIComponent(memoryBody.memory[0]!.id)}`,
+      { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'User-corrected verified memory.' }) },
+    ));
+    expect(await edited.json()).toMatchObject({ memory: { content: 'User-corrected verified memory.', editedByUser: true } });
     const passMetrics = await handler(new Request(
       `http://runtime.local/api/runs/${encodeURIComponent(meta?.run_id)}/pass-metrics`,
     ));
@@ -362,10 +939,33 @@ describe('practical CLI workflow', () => {
       run_id: meta?.run_id,
       metrics: { passes_audited: 2 },
     });
+    const trail = await handler(new Request(
+      `http://runtime.local/api/runs/${encodeURIComponent(meta?.run_id)}/trail`,
+    ));
+    const trailBody = await trail.json() as Record<string, any>;
+    expect(trailBody).toMatchObject({
+      schema_version: '1.0',
+      evidence_class: 'canonical_run_projection',
+      run_id: meta?.run_id,
+      integrity: { valid: true },
+      summary: {
+        status: 'completed',
+        effects_attempted: 1,
+        verified_actions: 1,
+        completion_verified: true,
+      },
+    });
+    expect(trailBody.events.every((event: Record<string, unknown>) => event.timing_source === 'replay_projection')).toBeTrue();
+    expect(new Set(trailBody.events.map((event: Record<string, unknown>) => event.id)).size).toBe(trailBody.events.length);
     const signals = await handler(new Request('http://runtime.local/api/signals'));
     expect(await signals.json()).toMatchObject({
       aggregate: { passes_audited: 2 },
       runs: [{ id: meta?.run_id }],
+    });
+    const labCatalog = await handler(new Request('http://runtime.local/api/lab/catalog'));
+    expect(await labCatalog.json()).toMatchObject({
+      agents: [{ id: 'verified-minimal' }, { id: 'resilient-operator' }, { id: 'research-specialist' }],
+      evidence_policy: { live_runs: 'canonical_run', benchmarks: 'deterministic_fixture' },
     });
     const restarted = createRuntimeHttpHandler({
       port: 0,
@@ -379,6 +979,97 @@ describe('practical CLI workflow', () => {
     });
     const resumedSessions = await restarted(new Request('http://runtime.local/api/sessions'));
     expect(((await resumedSessions.json()) as { sessions: unknown[] }).sessions).toHaveLength(1);
+    const rebuiltMemoryResponse = await restarted(new Request(
+      `http://runtime.local/api/memory?session_id=${encodeURIComponent(meta?.session_id)}`,
+    ));
+    expect(await rebuiltMemoryResponse.json()).toMatchObject({
+      memory: [{ content: 'User-corrected verified memory.', editedByUser: true, status: 'active' }],
+    });
+    const rebuiltEvents = await restarted(new Request(
+      `http://runtime.local/api/runs/${encodeURIComponent(meta?.run_id)}/events`,
+    ));
+    expect(((await rebuiltEvents.json()) as { events: Array<{ type: string }> }).events.some(
+      event => event.type === 'memory.user_superseded',
+    )).toBeTrue();
+  });
+
+  test('runs a persisted ping-pong provider/model schedule with automatic fallback', async () => {
+    const root = temporaryRoot();
+    writeFileSync(join(root, 'input.txt'), 'scheduled evidence');
+    let primaryCalls = 0;
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'),
+      provider: 'ollama',
+      model: 'model-a',
+      providers: [{ id: 'lmstudio', label: 'LM Studio', baseUrl: 'http://127.0.0.1:1234/v1', defaultModel: 'model-b' }],
+      allowedExecutables: [],
+      allowedHosts: [],
+      modelDriverFactory: selection => ({
+        async propose(_packet, _capabilities, scope) {
+          if (selection?.model === 'model-b') throw new Error('route B unavailable');
+          primaryCalls += 1;
+          return {
+            proposal: primaryCalls === 1 ? {
+              kind: 'action', strategyId: scope.activeStrategyId,
+              hypothesis: 'The bounded input file is readable.', expectedObservation: 'Its content is observed.',
+              action: {
+                id: 'proposal:ping-read', intentId: scope.intentId, principalId: scope.principalId,
+                conditionIds: scope.requiredConditionIds, capabilityId: 'workspace.file.read',
+                target: 'workspace/input.txt', declaredEffects: ['state.read'], risk: 1,
+                expectedEvidence: scope.requiredEvidence, idempotencyKey: 'ping-read:1', args: {},
+              },
+            } : {
+              kind: 'complete', strategyId: scope.activeStrategyId,
+              evidenceRefs: ['observation:proposal:ping-read'],
+            },
+            usage: { inputTokens: 1, outputTokens: 1, latencyMs: 1 },
+            model: `fixture:${selection?.provider}/${selection?.model}`,
+          };
+        },
+      }),
+    });
+    const session = await handler(new Request('http://runtime.local/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Ping pong' }),
+    }));
+    const sessionId = ((await session.json()) as { session: { id: string } }).session.id;
+    const routes = [
+      { provider: 'ollama', model: 'model-a' },
+      { provider: 'lmstudio', model: 'model-b' },
+    ];
+    const saved = await handler(new Request(`http://runtime.local/api/sessions/${encodeURIComponent(sessionId)}/agent`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        provider: 'ollama', model: 'model-a', profile: 'inspect', routing_mode: 'ping_pong', routing_routes: routes,
+      }),
+    }));
+    expect(await saved.json()).toMatchObject({ agent: { routingMode: 'ping_pong', routingRoutes: routes } });
+    const invalidRing = await handler(new Request(`http://runtime.local/api/sessions/${encodeURIComponent(sessionId)}/agent`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        provider: 'ollama', model: 'model-a', routing_mode: 'ring', routing_routes: routes,
+      }),
+    }));
+    expect(invalidRing.status).toBe(400);
+    expect(await invalidRing.json()).toMatchObject({ error: 'ring routing requires exactly 3 provider/model routes.' });
+    const response = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        message: 'Read workspace/input.txt and verify it.', session_id: sessionId,
+      }),
+    }));
+    const frames = (await response.text()).split('\n').filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6)) as Record<string, any>);
+    expect(frames.find(frame => frame.kind === 'meta')).toMatchObject({
+      routing_mode: 'ping_pong', routing_routes: routes,
+    });
+    const routeEvents = frames.filter(frame => frame.event?.type === 'model.request' && frame.event?.payload?.routeId);
+    expect(routeEvents.map(frame => ({ route: frame.event.payload.routeId, pass: frame.event.payload.pass, preferred: frame.event.payload.preferred }))).toEqual([
+      { route: '1:ollama/model-a', pass: 1, preferred: true },
+      { route: '2:lmstudio/model-b', pass: 2, preferred: true },
+      { route: '1:ollama/model-a', pass: 2, preferred: false },
+    ]);
+    expect(frames.some(frame => frame.event?.type === 'model.response' && frame.event?.payload?.routeId === '2:lmstudio/model-b')).toBeTrue();
+    expect(frames.some(frame => frame.event?.type === 'run.end')).toBeTrue();
   });
 
   test('persists bounded custom tools and schedules without expanding host authority', async () => {
@@ -548,6 +1239,10 @@ describe('practical CLI workflow', () => {
       GROQ_API_KEY: 'test-groq-key',
       ANTHROPIC_API_KEY: 'test-anthropic-key',
       OPENROUTER_API_KEY: 'test-openrouter-key',
+      NVIDIA_API_KEY: 'test-nvidia-key',
+      DEEPSEEK_API_KEY: 'test-deepseek-key',
+      MISTRAL_API_KEY: 'test-mistral-key',
+      OPENCODE_API_KEY: 'test-opencode-key',
       TAVILY_API_KEY: 'test-search-key',
       PATH: process.env.PATH,
       HYPER_WORKSPACE: root,
@@ -579,9 +1274,17 @@ describe('practical CLI workflow', () => {
     const configuration = await handler(new Request('http://runtime.local/api/config'));
     expect(await configuration.json()).toMatchObject({
       provider: 'gemini',
-      profiles: ['inspect', 'workspace', 'research'],
+      profiles: ['inspect', 'workspace', 'web', 'research', 'media', 'partner'],
       features: { web_search: true },
-      capabilities: [{ id: 'workspace.file.read' }, { id: 'workspace.file.write' }, { id: 'network.web.search' }],
+      capabilities: [
+        { id: 'workspace.file.read' },
+        { id: 'workspace.directory.list' },
+        { id: 'system.clock.read' },
+        { id: 'workspace.file.write' },
+        { id: 'session.knowledge.search' },
+        { id: 'network.web.search' },
+        { id: 'media.image.analyze' },
+      ],
       providers: [
         { id: 'gemini', configured: true },
         { id: 'ollama', configured: true, default_model: 'llama3.2' },
@@ -590,6 +1293,10 @@ describe('practical CLI workflow', () => {
         { id: 'openai', configured: false },
         { id: 'groq', configured: true },
         { id: 'openrouter', configured: true },
+        { id: 'nvidia', configured: true },
+        { id: 'deepseek', configured: true, default_model: 'deepseek-chat' },
+        { id: 'mistral', configured: true, default_model: 'mistral-small-latest' },
+        { id: 'opencode', configured: true, default_model: 'deepseek-v4-flash-free' },
         { id: 'lmstudio', configured: true },
         { id: 'llamacpp', configured: true },
       ],
@@ -604,6 +1311,100 @@ describe('practical CLI workflow', () => {
       url: 'https://generativelanguage.googleapis.com/v1beta/openai/models',
       authorization: 'Bearer test-gemini-key',
     });
+  });
+
+  test('loads an explicit environment model route schedule with route A as primary', () => {
+    const root = temporaryRoot();
+    const routes = [
+      { provider: 'anthropic', model: 'claude-route-a' },
+      { provider: 'groq', model: 'llama-route-b' },
+    ];
+    const config = runtimeHttpConfig({
+      HYPER_MODEL_ROUTING_MODE: 'ping_pong',
+      HYPER_MODEL_ROUTE_SCHEDULE: JSON.stringify(routes),
+      ANTHROPIC_API_KEY: 'test-a', GROQ_API_KEY: 'test-b',
+      HYPER_WORKSPACE: root, HYPER_LEDGER_DIR: join(root, 'ledgers'),
+    });
+    expect(config).toMatchObject({
+      provider: 'anthropic', model: 'claude-route-a', modelRoutingMode: 'ping_pong', modelRouteSchedule: routes,
+    });
+    expect(() => runtimeHttpConfig({ HYPER_MODEL_ROUTE_SCHEDULE: 'not-json' })).toThrow('JSON array');
+  });
+
+  test('shows only OpenCode Zen models compatible with the current chat transport', async () => {
+    const root = temporaryRoot();
+    const config = runtimeHttpConfig({
+      OPENCODE_API_KEY: 'test-opencode-key',
+      HYPER_WORKSPACE: root,
+      HYPER_LEDGER_DIR: join(root, 'ledgers'),
+      HYPER_OPERATOR_DATA: join(root, 'operator.json'),
+    });
+    const authorizations: Array<string | null> = [];
+    config.providerFetch = async (_input, init) => {
+      authorizations.push(new Headers(init?.headers).get('authorization'));
+      return Response.json({
+        data: [
+          { id: 'gpt-5.6' },
+          { id: 'claude-opus-4-6' },
+          { id: 'gemini-3.1-pro' },
+          { id: 'deepseek-v4-flash-free' },
+          { id: 'nemotron-3-ultra-free' },
+        ],
+      });
+    };
+    const handler = createRuntimeHttpHandler(config);
+    const response = await handler(new Request('http://runtime.local/api/models/opencode'));
+
+    expect(await response.json()).toMatchObject({
+      provider: 'opencode',
+      connected: true,
+      models: [
+        { id: 'deepseek-v4-flash-free' },
+        { id: 'nemotron-3-ultra-free' },
+      ],
+    });
+    expect(authorizations).toEqual(['Bearer test-opencode-key']);
+  });
+
+  test('registers only authority-mapped MCP tools discovered from configured endpoints', async () => {
+    const root = temporaryRoot();
+    const methods: string[] = [];
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'),
+      provider: 'ollama',
+      model: 'fixture',
+      allowedExecutables: [],
+      allowedHosts: [],
+      mcpServers: [{
+        id: 'fixture-mcp',
+        endpoint: 'https://mcp.fixture.test/mcp',
+        authorities: [{
+          toolName: 'lookup', observationToolName: 'lookup_observe', effects: ['state.read'],
+          targetPatterns: ['mcp://lookup/**'], riskCeiling: 2, approval: 'never',
+        }],
+      }],
+      providerFetch: async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as { id?: number; method: string };
+        methods.push(request.method);
+        const result = request.method === 'initialize'
+          ? { protocolVersion: '2025-11-25', capabilities: { tools: {} } }
+          : { tools: [
+              { name: 'lookup', inputSchema: { type: 'object' } },
+              { name: 'lookup_observe', inputSchema: { type: 'object' } },
+              { name: 'unmapped_delete', inputSchema: { type: 'object' } },
+            ] };
+        return Response.json({ jsonrpc: '2.0', id: request.id, result });
+      },
+    });
+    const response = await handler(new Request('http://runtime.local/api/config'));
+    const config = await response.json() as { capabilities: Array<{ id: string }> };
+
+    expect(config.capabilities.map(item => item.id)).toContain('mcp.lookup');
+    expect(config.capabilities.map(item => item.id)).not.toContain('mcp.unmapped_delete');
+    expect(methods).toEqual(['initialize', 'notifications/initialized', 'tools/list']);
   });
 
   test('continues an HTTP run after a live proposal-scoped approval', async () => {
@@ -689,5 +1490,54 @@ describe('practical CLI workflow', () => {
       buffer += decoder.decode(chunk.value, { stream: true });
     }
     expect(readFileSync(join(root, 'approved.txt'), 'utf8')).toBe('approved');
+  });
+
+  test('discovers configured media capabilities without exposing provider credentials', async () => {
+    const root = temporaryRoot();
+    const config = runtimeHttpConfig({
+      HYPER_WORKSPACE: root,
+      HYPER_LEDGER_DIR: join(root, 'ledgers'),
+      HYPER_OPERATOR_DATA: join(root, 'operator.json'),
+      HYPER_PROVIDER: 'ollama',
+      DEEPGRAM_API_KEY: 'deepgram-secret',
+      ELEVENLABS_API_KEY: 'eleven-secret',
+      HYPER_ELEVENLABS_VOICE_ID: 'voice_fixture',
+      HYPER_ELEVENLABS_AGENT_IDS: 'agent_fixture',
+      GEMINI_API_KEY: 'gemini-secret',
+      OPENAI_API_KEY: 'openai-secret',
+      HYPER_VISION_MODEL: 'gemini-flash-latest',
+      HYPER_IMAGE_MODEL: 'gpt-image-2',
+    });
+    const handler = createRuntimeHttpHandler(config);
+    const response = await handler(new Request('http://runtime.local/api/config'));
+    const payload = await response.json() as {
+      profiles: string[];
+      capabilities: Array<{ id: string }>;
+      features: Record<string, unknown>;
+    };
+    const capabilityIds = payload.capabilities.map(item => item.id);
+
+    expect(payload.profiles).toContain('media');
+    expect(capabilityIds).toEqual(expect.arrayContaining([
+      'media.audio.transcribe.deepgram',
+      'media.audio.synthesize.deepgram',
+      'media.audio.transcribe.elevenlabs',
+      'media.audio.synthesize.elevenlabs',
+      'media.voice.session.elevenlabs',
+      'media.image.analyze',
+      'media.image.generate',
+    ]));
+    expect(payload.features).toMatchObject({ bounded_media: true, ephemeral_voice_sessions: true });
+    expect(JSON.stringify(payload)).not.toContain('deepgram-secret');
+    expect(JSON.stringify(payload)).not.toContain('eleven-secret');
+    expect(JSON.stringify(payload)).not.toContain('gemini-secret');
+    expect(JSON.stringify(payload)).not.toContain('openai-secret');
+
+    const issued = config.voiceSessionBroker!.issue('wss://api.elevenlabs.io/v1/convai/conversation?token=single-use');
+    const claim = await handler(new Request(`http://runtime.local/api/media/voice-sessions/${issued.handle}/claim`, { method: 'POST' }));
+    expect(claim.headers.get('cache-control')).toBe('no-store');
+    expect(await claim.json()).toEqual({ signed_url: 'wss://api.elevenlabs.io/v1/convai/conversation?token=single-use' });
+    const replayedClaim = await handler(new Request(`http://runtime.local/api/media/voice-sessions/${issued.handle}/claim`, { method: 'POST' }));
+    expect(replayedClaim.status).toBe(410);
   });
 });

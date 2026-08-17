@@ -21,7 +21,33 @@ table distinguishes reachability from functional enforcement.
 | Legacy memory writer | REPLACED | `packages/cli/src/server.ts` commits only capability-verified terminal observations through `memory.verified_outcome_committed` | No intermediate reasoning or unverified response prose is eligible |
 | Legacy custom HTTP tools | REPLACED WITH BOUNDED GET | `packages/capabilities/src/http.ts` enforces preconfigured host and path prefixes on requests and redirects | Tools cannot add hosts beyond `HYPER_ALLOWED_HOSTS` and remain policy-gated |
 | Legacy schedules | MIGRATED WITH SAME-KERNEL EXECUTION | `packages/cli/src/server.ts` dispatches interactive and scheduled objectives through `/api/runtime/run` | Completed state survives restart; in-flight crash resume remains unimplemented |
+| Legacy provider selection | REPLACED WITH SERVER-OWNED ROUTING | `packages/model/src/index.ts` and `packages/cli/src/server.ts` provide probed inventories, canonical proposal validation, fallback, and round-robin routing | A failed provider cannot bypass proposal parsing, policy, observation, or verification |
+| Legacy session agents | MIGRATED WITH NARROWER MEMORY | `packages/cli/src/operator-store.ts` persists per-session agent configuration and session-owned verified memory | Linked schedules reuse that session only; autonomy cannot expand saved authority |
+| Legacy event presentation | REPLACED AS A DISPLAY PROJECTION | `packages/cli/src/server.ts` adds human titles and causal details while preserving canonical types and raw payloads | UI wording is not durable truth and cannot alter execution history |
 | Legacy workflow templates, credentials, and channels | NOT MIGRATED | These features depend on broader authority and external secret/channel contracts absent from the evaluated core | Keep isolated until each has an explicit capability, verifier, and threat-model fixture |
+
+## Legacy tool disposition
+
+“Converged” does not mean copying every reachable legacy tool. It means moving
+only behavior that can cross the same authority, execution, observation, and
+verification boundary.
+
+| Legacy tool or group | Current disposition | Reason |
+|---|---|---|
+| `read_file`, `write_file` | REPLACED | Workspace-contained read and atomic write capabilities reject path escape and symbolic-link traversal. |
+| `web_fetch` | REPLACED | Allowlisted HTTP GET validates hosts, DNS/IP results, redirects, size, and policy effects. |
+| `web_search` | REPLACED | Tavily, Brave, Exa, and SearXNG adapters use an ordered fallback and normalize absolute result URLs. |
+| `run_shell` | REPLACED | The public process capability is shell-free, executable-allowlisted, workspace-bounded, and output/time-limited. |
+| `search_notes`, `remember`, `memory` | REPLACED WITH NARROWER SEMANTICS | Context can read only the current session's verified-outcome memory; models cannot commit unverified notes or intermediate reasoning. |
+| Declarative custom HTTP tools | REPLACED | Operator-created GET tools remain inside server-configured host and path authority. |
+| `list_files` | REPLACED | `workspace.directory.list` bounds entry count, excludes hidden names by default, sorts deterministically, rejects path/symlink escape, and independently observes the directory. |
+| `clock` | REPLACED | `system.clock.read` requires an explicit timezone and commits one injected instant as replayable observed evidence. |
+| `calculator` | REJECTED AS IMPLEMENTED | The legacy implementation uses `new Function`; migrate only after replacing it with a non-evaluating expression parser and deterministic verifier. |
+| `stock_finance` | REJECTED AS IMPLEMENTED | Its network failure path returns a fabricated successful quote, violating the no-false-success invariant. |
+| `generate_image` | REJECTED AS IMPLEMENTED | It writes a dummy pixel while claiming generation; this is a fixture, not a verified media capability. |
+| `research_workspace` super tool | REJECTED AS IMPLEMENTED | It emits staged claims over a hardcoded file list instead of executing and verifying the named primitive tools. |
+| Arbitrary MCP/remote discovery | REPLACED WITH SERVER-OWNED DISCOVERY | Streamable HTTP discovery is restricted to configured endpoints; every reachable tool needs an explicit local authority mapping and separate observation tool. |
+| Credentials and channels | REPLACED WITH BOUNDED GATEWAYS | Backend-held credentials, sender/recipient allowlists, approval, authenticated ingress, and observed delivery replace ambient channel access. |
 
 The mechanical import audit also identifies `knowledge/knowledge.ts`,
 `knowledge/wiki.ts`, `tools/custom.ts`, `domain/career/types.ts`, and several

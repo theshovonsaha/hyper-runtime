@@ -1,0 +1,204 @@
+{
+  "benchmark": "runtime-lab",
+  "version": "1.0",
+  "evidenceMode": "deterministic_fixture",
+  "trials": [
+    {
+      "id": "normal-completion",
+      "fault": "none",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": true
+    },
+    {
+      "id": "false-success",
+      "fault": "false_success",
+      "expectedStatus": "verification_failed",
+      "actualStatus": "verification_failed",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": true
+    },
+    {
+      "id": "stale-observation",
+      "fault": "stale_observation",
+      "expectedStatus": "verification_failed",
+      "actualStatus": "verification_failed",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": true
+    },
+    {
+      "id": "adapter-throw",
+      "fault": "throw",
+      "expectedStatus": "execution_failed",
+      "actualStatus": "execution_failed",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "capability.execution_failed",
+        "effect.reconciled",
+        "action.executed",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": false
+    },
+    {
+      "id": "adapter-timeout",
+      "fault": "timeout",
+      "expectedStatus": "execution_failed",
+      "actualStatus": "execution_failed",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "capability.execution_failed",
+        "effect.reconciled",
+        "action.executed",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": false
+    },
+    {
+      "id": "partial-effect",
+      "fault": "partial_effect",
+      "expectedStatus": "execution_failed",
+      "actualStatus": "execution_failed",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "effect.reconciled",
+        "action.executed",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": false
+    },
+    {
+      "id": "malformed-result",
+      "fault": "malformed",
+      "expectedStatus": "execution_failed",
+      "actualStatus": "execution_failed",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": false
+    },
+    {
+      "id": "outside-scope",
+      "fault": "none",
+      "expectedStatus": "denied",
+      "actualStatus": "denied",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": false
+    },
+    {
+      "id": "approval-boundary",
+      "fault": "none",
+      "expectedStatus": "awaiting_approval",
+      "actualStatus": "awaiting_approval",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": false
+    },
+    {
+      "id": "repeat-control",
+      "fault": "none",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "eventTypes": [
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "passed": true,
+      "executionReportedSuccess": true
+    }
+  ],
+  "metrics": {
+    "scenarioPassRate": 1,
+    "falseSuccessPreventionRate": 1,
+    "uncertainEffectDisclosureRate": 1,
+    "modelCalls": 0
+  },
+  "acceptance": {
+    "passed": true,
+    "requiredRate": 1
+  }
+}

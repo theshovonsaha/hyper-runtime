@@ -53,6 +53,19 @@ export const api = {
       return { ok: false, error: err.message };
     }
   },
+  patch: async (endpoint, body = {}) => {
+    try {
+      const res = await fetch(endpoint, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(`API Error: ${res.statusText}`);
+      return await res.json();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
   delete: async (endpoint) => {
     try {
       const res = await fetch(endpoint, { method: "DELETE" });

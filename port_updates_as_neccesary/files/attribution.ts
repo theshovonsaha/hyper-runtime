@@ -6,7 +6,14 @@
  * tool execution outputs contributed directly to generated response sentences.
  */
 
-import type { ContextItem } from '../context/assembler';
+interface ContextItem {
+  id: string;
+  kind: string;
+  title: string;
+  source_ref: string;
+  text?: string;
+  included?: boolean;
+}
 
 export interface AttributionScore {
   itemId: string;

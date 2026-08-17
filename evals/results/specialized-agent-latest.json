@@ -1,0 +1,22 @@
+{
+  "benchmark": "verified-workspace-agent",
+  "version": "1.0",
+  "domain": "bounded workspace state transition",
+  "evidenceMode": "deterministic_fixture",
+  "trialCount": 50,
+  "treatment": {
+    "completionAccuracy": 1,
+    "falseSuccessRate": 0,
+    "authorityViolationRate": 0
+  },
+  "reachableOnlyBaseline": {
+    "falseSuccessRate": 0.6666666666666666,
+    "note": "Counterfactual structural baseline treats adapter success as task success; it is not a second live execution."
+  },
+  "replayFidelity": 1,
+  "acceptance": {
+    "passed": true,
+    "minimumTrials": 50,
+    "maximumFalseSuccessRate": 0
+  }
+}

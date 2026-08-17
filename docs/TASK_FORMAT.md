@@ -23,8 +23,9 @@ bun run hyper -- replay --ledger /tmp/hyper-verified-file.jsonl
 Replay output includes whole-file integrity plus a per-run event count, latest
 event hash, terminal status, and receipt hash. Run IDs are immutable identities:
 starting another workflow with an ID already present in the ledger is rejected.
-Use a new run ID for a new attempt. Resuming an incomplete run is not implemented
-in v0.2.
+Use a new run ID for a new CLI attempt. The HTTP operator can start a linked
+continuation from canonical verified state. It folds in verified actions
+recorded after the latest checkpoint so their effects are not replayed.
 
 The scripted provider is an auditable end-to-end mechanism demonstration. It
 does not make a model-quality claim.
@@ -132,8 +133,10 @@ Example:
 
 Each model turn proposes one action, pivot, question, or completion claim. A
 workflow can therefore use multiple tools across verified sequential steps.
-Parallel scheduling, automatic crash resume, and arbitrary MCP discovery are
-not implemented in the CLI surface.
+Parallel plan scheduling and arbitrary ambient MCP discovery are not
+implemented in the CLI surface. The HTTP service supports linked crash
+continuation, and programmatic delegation exposes atomic concurrent budget
+reservation plus terminating worker contracts.
 
 ## Trust boundary
 

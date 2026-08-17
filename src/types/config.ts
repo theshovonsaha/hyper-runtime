@@ -7,6 +7,7 @@ import { join } from 'path';
 import { InspectionLevel, parseInspectionLevel } from './events';
 
 export interface RuntimeConfig {
+  epistemicRigor: any;
   activeModelMapping: any;
   port: number;
   provider: string;

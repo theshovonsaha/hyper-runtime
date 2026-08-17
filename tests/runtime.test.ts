@@ -125,6 +125,23 @@ describe('deterministic authority boundary', () => {
     expect(decision.reasonCodes).toContain('EVIDENCE_OUTSIDE_INTENT:confident_model_claim');
   });
 
+  test('denies a proposal that omits a capability effect required on every invocation', () => {
+    const capability = new InMemoryWorkspaceCapability();
+    const input = fixture({ declaredEffects: ['state.read'] });
+    const decision = new DeterministicPolicyEngine().decide({
+      now,
+      ...input,
+      manifest: {
+        ...capability.manifest,
+        effects: ['state.read', 'state.write'],
+        requiredEffects: ['state.write'],
+      },
+    });
+
+    expect(decision.disposition).toBe('deny');
+    expect(decision.reasonCodes).toContain('REQUIRED_CAPABILITY_EFFECT_OMITTED');
+  });
+
   test('detects a false-success tool result through observed state', async () => {
     const capability = new InMemoryWorkspaceCapability();
     const runtime = new AuthorizedRuntime();

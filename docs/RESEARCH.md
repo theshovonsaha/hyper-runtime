@@ -234,6 +234,45 @@ false parent acceptance, legitimate child completion, recovery, latency,
 tokens, and actions. Fixtures and thresholds must be frozen before mechanisms
 are tuned.
 
+## Semantic workflow composition
+
+The runtime separates known control structure from adaptive judgment. A
+reviewable `ComposedWorkflowPlan` supports `sequence`, bounded `parallel`,
+`choice`, bounded `loop`, `gate`, `verify`, narrowed `subworkflow`, capability
+`action`, registered `deterministic` steps, and schema-bounded `model`
+operations. `compileSemanticWorkflowConfig` lowers semantic `use:` entries only
+through a reviewed code-owned adapter catalog, then `compileWorkflowConfig`
+validates the resulting graph. Neither compiler calls a model, grants
+authority, or executes an effect.
+
+```text
+known structure -> workflow node
+simple transform -> reviewed deterministic adapter
+ambiguous choice -> schema-bounded model operation
+effect -> ordinary capability proposal -> policy -> observe -> verify
+```
+
+Parallel composition is deliberately conservative: nodes containing write,
+delete, or process effects are rejected until explicitly serialized. A model
+output becomes only a typed fact. It cannot directly authorize a later action.
+Verified repeated traces may be crystallized into inert workflow candidates,
+but backtesting plus an explicit human activation receipt are required before
+reuse. This implements progressive compilation as a review process, not online
+model retraining.
+
+The context system avoids a mandatory preprocessing-model call. Recent
+conversation, reviewed semantic records, and verified observations are selected
+by deterministic phase, authority, validity, relevance, duplicate, and budget
+rules. Optional model inference can propose a semantic record, but the raw
+source and provenance remain inspectable.
+
+Textual architecture alone is not evidence. The evidence ladder used here is:
+
+```text
+design claim -> typed contract -> enforced transition -> test -> frozen eval
+  -> credentialed live run -> independent reproduction
+```
+
 ## LLM extraction
 
 ```text
@@ -247,3 +286,35 @@ parent authority
     -> child verification establishes a candidate result
       -> parent validation decides whether that result enters parent state
 ```
+
+## Adversarial and live-provider extension
+
+`evals/adversarial-runtime.v1.json` freezes representative resource escape,
+prompt-injection authority, prose proposal, child authority expansion, unmapped
+MCP tool, and cross-session retrieval attacks. `bun run check` executes these
+fixtures with zero model calls and requires a 100% pass rate.
+
+`bun run eval:live` is a separate credentialed experiment across configured
+Gemini, Groq, NVIDIA, DeepSeek, Mistral, and OpenCode routes. It records
+`evidenceClass: live_model`, provider/model identity, latency, proposal kind,
+errors, and whether actions stayed inside supplied authority. Its results must
+not be conflated with deterministic fixture evidence.
+
+## Runtime scenario lab and specialized benchmark
+
+`evals/runtime-lab.v1.json` predeclares ten terminal outcomes and their required
+and forbidden canonical events. The runner injects throws, timeouts,
+false-success reports, stale observations, malformed results, and partial
+effects. A successful adapter return alone cannot satisfy a trial.
+
+`evals/specialized-agent.v1.json` freezes ten seeds crossed with five workspace
+fault mutations (50 trials). Each trial is repeated and trace reproducibility is
+measured. The report includes treatment completion accuracy, false-success and
+authority-violation rates, plus a labelled counterfactual reachability-only
+baseline.
+
+Both suites use deterministic adapters and make zero model calls. They establish
+behavior under committed faults, not live planning quality, general factual
+correctness, or external validity. The smallest next experiment is a held-out,
+independently authored domain fixture followed separately by the credentialed
+provider suite.

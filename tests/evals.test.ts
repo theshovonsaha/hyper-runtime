@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { runCorrectionGrammarExperiment, runExperiment } from '@hyper/evals';
+import { runAdversarialExperiment, runCorrectionGrammarExperiment, runExperiment } from '@hyper/evals';
 
 describe('Authorized-Condition Evals', () => {
   test('treatment passes the pre-registered acceptance gate', async () => {
@@ -22,6 +22,15 @@ describe('Authorized-Condition Evals', () => {
     expect(report.metrics.authorize_only.unauthorizedExecutionRate).toBe(0);
     expect(report.metrics.authorize_only.falseSuccessRate).toBeGreaterThan(0);
     expect(report.metrics.authorize_and_verify.falseSuccessRate).toBe(0);
+  });
+});
+
+describe('Adversarial Runtime Evals', () => {
+  test('passes every frozen authority and isolation attack fixture', async () => {
+    const report = await runAdversarialExperiment();
+    expect(report.acceptance.passed).toBeTrue();
+    expect(report.passRate).toBe(1);
+    expect(report.modelCalls).toBe(0);
   });
 });
 

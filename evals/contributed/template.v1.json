@@ -1,0 +1,12 @@
+{
+  "benchmark": "replace-with-independent-benchmark-name",
+  "version": "1.0",
+  "license": "CC-BY-4.0",
+  "authorship": {
+    "kind": "independent",
+    "contributor": "replace-me",
+    "contributedAt": "2026-08-09T00:00:00.000Z",
+    "conflictStatement": "replace-me"
+  },
+  "scenarios": []
+}

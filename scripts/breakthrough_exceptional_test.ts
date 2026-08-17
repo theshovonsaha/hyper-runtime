@@ -53,7 +53,7 @@ async function runBreakthroughExceptionalTest() {
 
   // --- Phase 1: Pre-Inference Steering & Seed Binding ---
   console.log('\n[Phase 1/5] Pre-Inference Context Steering & Deterministic Seed Binding...');
-  const prompt = 'Solve complex multi-step reasoning task with tool execution';
+  const prompt = 'Solve complex multi-step reasoning task with tool execution. use internal thinking technuqes to use cognition with simplest signals adn solutions for this request.';
   const seedSel = seedEngine.selectSeed(prompt, 'run-bt-100');
   store.addNote('bt-sess-1', 'run-bt-100', 'history', 'Turn 1 history message');
   const envelope = createEnvelope('bt-sess-1', prompt, { provider: 'mock', model: 'mock-driver' });

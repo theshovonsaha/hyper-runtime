@@ -1,0 +1,16 @@
+{
+  "benchmark": "runtime-lab",
+  "version": "1.0",
+  "scenarios": [
+    { "id": "normal-completion", "fault": "none", "expectedStatus": "completed", "requiredEvents": ["policy.decided", "state.observed", "action.verified"], "forbiddenEvents": ["effect.reconciliation_failed"] },
+    { "id": "false-success", "fault": "false_success", "expectedStatus": "verification_failed", "requiredEvents": ["action.executed", "state.observed", "action.verified"], "forbiddenEvents": [] },
+    { "id": "stale-observation", "fault": "stale_observation", "expectedStatus": "verification_failed", "requiredEvents": ["state.observed", "action.verified"], "forbiddenEvents": [] },
+    { "id": "adapter-throw", "fault": "throw", "expectedStatus": "execution_failed", "requiredEvents": ["capability.execution_failed", "action.executed"], "forbiddenEvents": ["state.observed"] },
+    { "id": "adapter-timeout", "fault": "timeout", "expectedStatus": "execution_failed", "requiredEvents": ["capability.execution_failed", "action.executed"], "forbiddenEvents": ["state.observed"] },
+    { "id": "partial-effect", "fault": "partial_effect", "expectedStatus": "execution_failed", "requiredEvents": ["effect.reconciled", "action.executed"], "forbiddenEvents": ["state.observed"] },
+    { "id": "malformed-result", "fault": "malformed", "expectedStatus": "execution_failed", "requiredEvents": ["action.executed"], "forbiddenEvents": ["action.verified"] },
+    { "id": "outside-scope", "fault": "none", "target": "private/secret.txt", "expectedStatus": "denied", "requiredEvents": ["policy.decided"], "forbiddenEvents": ["action.executed"] },
+    { "id": "approval-boundary", "fault": "none", "risk": 3, "expectedStatus": "awaiting_approval", "requiredEvents": ["policy.decided"], "forbiddenEvents": ["action.executed"] },
+    { "id": "repeat-control", "fault": "none", "target": "workspace/control.txt", "expectedStatus": "completed", "requiredEvents": ["capability.granted", "action.verified"], "forbiddenEvents": ["effect.reconciled"] }
+  ]
+}

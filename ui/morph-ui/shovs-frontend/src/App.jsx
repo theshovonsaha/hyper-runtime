@@ -7,8 +7,11 @@ import { ToolDetailPane } from './components/ToolDetailPane';
 import { TurnDetailPane } from './components/TurnDetailPane';
 import { MorphChatModal } from './demos/MorphChatModal';
 import { BlobPlayground } from './demos/BlobPlayground';
+import { RuntimeLab } from './demos/RuntimeLab';
+import { MemoryGraph } from './demos/MemoryGraph';
+import { ContextInspector } from './demos/ContextInspector';
 import { BlobAvatar, MorphPanel, useViewStack } from 'morph-ui/react';
-import { Send, ChevronRight, Layers, MessageSquare, Terminal } from 'lucide-react';
+import { Send, ChevronRight, Layers, MessageSquare, Terminal, FlaskConical, BrainCircuit, Braces } from 'lucide-react';
 
 function Header({ activeApp, setActiveApp }) {
   const { newSession, provider, currentModel, profile, setProfile, profiles } = useShovs();
@@ -21,7 +24,7 @@ function Header({ activeApp, setActiveApp }) {
       
       {/* App Switcher Tabs */}
       <div style={{ display: 'flex', gap: 6, marginLeft: 16 }}>
-        <button 
+        <button
           className={`header-pill ${activeApp === 'chat-modal' ? 'on' : ''}`}
           onClick={() => setActiveApp('chat-modal')}
         >
@@ -34,6 +37,18 @@ function Header({ activeApp, setActiveApp }) {
           <Terminal size={13} /> Runtime trail
         </button>
         <button 
+          className={`header-pill ${activeApp === 'runtime-lab' ? 'on' : ''}`}
+          onClick={() => setActiveApp('runtime-lab')}
+        >
+          <FlaskConical size={13} /> Runtime Lab
+        </button>
+        <button className={`header-pill ${activeApp === 'memory-graph' ? 'on' : ''}`} onClick={() => setActiveApp('memory-graph')}>
+          <BrainCircuit size={13} /> Memory
+        </button>
+        <button className={`header-pill ${activeApp === 'context-inspector' ? 'on' : ''}`} onClick={() => setActiveApp('context-inspector')}>
+          <Braces size={13} /> Context
+        </button>
+        <button
           className={`header-pill ${activeApp === 'blob-playground' ? 'on' : ''}`}
           onClick={() => setActiveApp('blob-playground')}
         >
@@ -218,6 +233,9 @@ function MainLayout() {
       <main className="main-content" style={{ overflow: 'hidden' }}>
         {activeApp === 'chat-modal' && <MorphChatModal />}
         {activeApp === 'shovs-runtime' && <ShovsRuntime />}
+        {activeApp === 'runtime-lab' && <RuntimeLab />}
+        {activeApp === 'memory-graph' && <MemoryGraph />}
+        {activeApp === 'context-inspector' && <ContextInspector />}
         {activeApp === 'blob-playground' && <BlobPlayground />}
       </main>
       
@@ -226,6 +244,9 @@ function MainLayout() {
         <span>
           {activeApp === 'chat-modal' && 'Morph Chat Modal · compact shape-morphing assistant card'}
           {activeApp === 'shovs-runtime' && 'Transparent Runtime · live telemetry, context gate & side-by-side dashboard'}
+          {activeApp === 'runtime-lab' && 'Runtime Lab · real agent comparisons, automatic findings & evidence-labelled evaluations'}
+          {activeApp === 'memory-graph' && 'Runtime Graph · memory, context, tools, verification, and evidence'}
+          {activeApp === 'context-inspector' && 'Context · exact model inputs, selection, tools, and detected drift'}
           {activeApp === 'blob-playground' && 'Gooey Canvas · interactive SVG shape morphing & fluid blob fusion'}
         </span>
       </div>

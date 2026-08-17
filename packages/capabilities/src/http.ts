@@ -119,6 +119,7 @@ export class AllowlistedHttpCapability implements CapabilityAdapter<HttpGetArgs>
       version: '0.2.0',
       description: options.description,
       effects: ['network.request', 'state.read'],
+      requiredEffects: ['network.request'],
       targetPatterns: options.allowedHosts.flatMap(host => {
         const prefixes = options.pathPrefixes?.[host] ?? ['/'];
         return prefixes.flatMap(prefix => {

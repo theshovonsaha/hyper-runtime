@@ -100,19 +100,19 @@ receipt links to the child's final receipt hash. Parent and child histories can
 therefore be inspected separately while preserving the causal edge between
 them.
 
-## What the skeleton does not claim
+## What the mechanism does not claim
 
-- The wall-time signal is cooperatively enforced by the workflow between
-  steps; it is not process termination or an OS sandbox.
-- Budget admission is checked against a caller-supplied remaining balance.
-  Atomic reservation across parallel or distributed children is not yet
-  implemented.
-- The local adapter links the child's receipt hash, but no signature or remote
-  attestation protocol exists.
+- A generic executor may still cooperate with abort. The isolated worker
+  executor requires its termination primitive to finish before cancellation is
+  accepted; deployment must supply that real process/container boundary.
+- A shared budget pool atomically reserves and settles concurrent local child
+  budgets. It is not a distributed transaction protocol across hosts.
+- Ed25519 receipts bind child results to contract-trusted keys. They do not
+  prove that the remote host, model, or operating system was uncompromised.
 - The result schema validator intentionally supports a small safe subset of
   JSON Schema.
-- There is no parallel scheduler, delegation UI, or live-model delegation
-  benchmark yet.
+- There is no distributed scheduler, delegation UI, or independently authored
+  live-model delegation benchmark yet.
 
 These are explicit polish targets, not hidden production claims.
 

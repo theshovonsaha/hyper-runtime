@@ -22,7 +22,7 @@ const backendDir = process.env.HYPER_RUNTIME_DIR
   : defaultBackendDir
 const backendPort = process.env.HYPER_PORT || process.env.SHOVS_V2_PORT || '8791'
 let apiTarget = process.env.VITE_API_TARGET || `http://127.0.0.1:${backendPort}`
-const expectedServiceRevision = 'provider-registry-v2'
+const expectedServiceRevision = 'product-v10'
 
 let backend = null
 let vite = null

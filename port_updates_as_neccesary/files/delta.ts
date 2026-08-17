@@ -14,8 +14,15 @@
  * i.e. "assume fine, don't block the run."
  */
 
-import type { Provider } from '../providers/base';
-
+export interface Provider {
+  // streamTurn takes message turns, an options array, and a progress callback,
+  // and resolves to an object with a `text` property containing the model output.
+  streamTurn(
+    messages: Array<{ role: string; content: string }>,
+    opts: any[],
+    onProgress: () => Promise<void>,
+  ): Promise<{ text: string }>;
+}
 export interface DeltaAssessment {
   /** How far the current draft/evidence is from satisfying the objective. */
   distance: 'none' | 'small' | 'large';

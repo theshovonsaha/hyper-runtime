@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Activity, ArrowLeft, Braces, Check, ChevronRight, CircleStop, Clock3, Database,
-  History, Layers3, ListChecks, Loader2, MessageSquare, Plus, RotateCw,
+  Activity, ArrowLeft, Braces, Check, ChevronDown, ChevronRight, CircleStop, Clock3, Database,
+  Eye, FileText, Folder, FolderOpen, History, Layers3, Link2, ListChecks, Loader2, MessageSquare, Paperclip, Plus, RotateCw,
   Search, Send, Server, Settings2, Sparkles, TerminalSquare, Wrench, X,
 } from "lucide-react";
 import { BlobAvatar } from "morph-ui/react";
@@ -10,8 +10,7 @@ const PHASES = ["intake", "context", "gate", "plan", "model", "tool", "verify", 
 const PHASE_LABEL = { intake:"Intake", context:"Context", gate:"Approval", plan:"Planning", model:"Thinking", tool:"Using tools", verify:"Verifying", respond:"Responding", commit:"Receipt", done:"Complete", error:"Error" };
 const PHASE_COLOR = { intake:"#8d84a6", context:"#22c55e", gate:"#fbbf24", plan:"#8b5cf6", model:"#22d3ee", tool:"#f97316", verify:"#fbbf24", respond:"#a3e635", commit:"#ec4899", done:"#a3e635", error:"#fb7185" };
 
-let sequence = 200;
-const id = prefix => `${prefix}-${++sequence}`;
+const id = prefix => `${prefix}:${crypto.randomUUID()}`;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const EVENT_VIEW = {
@@ -35,6 +34,15 @@ const EVENT_VIEW = {
   "run.end": { phase:"done", icon:Check, title:()=>"Run complete", detail:e=>e.summary || "The answer and its full workflow are ready" },
   "run.pause": { phase:"gate", icon:MessageSquare, title:()=>"Waiting for your reply", detail:e=>e.summary || "The workflow paused for information only you can provide" },
   "run.error": { phase:"error", icon:X, title:()=>"Run needs attention", detail:e=>e.summary || "The runtime reported an error" },
+  "model.proposed": { phase:"model", icon:Sparkles, title:()=>"Model proposed the next move", detail:()=>"A suggestion only; policy has not authorized it" },
+  "policy.decided": { phase:"gate", icon:CircleStop, title:()=>"Policy evaluated authority", detail:e=>(e.payload?.disposition ? `${e.payload.disposition} · ${(e.payload.reasonCodes||[]).join(", ")}` : "Checking scope, conditions, effects, risk, and approval") },
+  "action.executed": { phase:"tool", icon:Wrench, title:()=>"Capability reported an execution result", detail:e=>e.payload?.summary || "This report is not completion until observed and verified" },
+  "state.observed": { phase:"verify", icon:Search, title:()=>"Runtime observed actual state", detail:e=>e.payload?.target || "Reading the environment independently of the model" },
+  "action.verified": { phase:"verify", icon:ListChecks, title:()=>"Runtime checked the outcome", detail:e=>(e.payload?.passed ? "Observed evidence passed the declared verifier" : "The claimed outcome was not established") },
+  "effect.reconciled": { phase:"verify", icon:RotateCw, title:()=>"Uncertain effect reconciled", detail:e=>e.payload?.summary || "Observed whether an interrupted effect was applied before any retry" },
+  "effect.reconciliation_failed": { phase:"error", icon:X, title:()=>"Effect remains uncertain", detail:()=>"The runtime will not blindly repeat this action" },
+  "workflow.node_started": { phase:"plan", icon:ListChecks, title:e=>`Starting ${e.payload?.kind || "workflow"} node`, detail:e=>e.payload?.nodeId || "Bounded workflow composition" },
+  "workflow.node_finished": { phase:"plan", icon:Check, title:e=>`${e.payload?.kind || "Workflow"} node ${e.payload?.status || "finished"}`, detail:e=>(e.payload?.reasonCodes||[]).join(", ") },
 };
 
 function toolName(event) {
@@ -47,24 +55,89 @@ function stageDetail(payload={}) {
 }
 function viewOf(event={}) {
   const adapter = EVENT_VIEW[event.type] || { phase:event.phase || "model", icon:Braces, title:e=>(e.type || "runtime event").replaceAll(".", " › "), detail:e=>e.summary || "Structured runtime event" };
-  return { phase:event.phase || adapter.phase, Icon:adapter.icon, title:adapter.title(event), detail:adapter.detail(event) };
+  return {
+    phase:event.phase || adapter.phase,
+    Icon:adapter.icon,
+    title:event.title || adapter.title(event),
+    detail:event.detail || event.summary || adapter.detail(event),
+  };
 }
-const INITIAL_MESSAGES = [
+function localEventState(event={}) {
+  if(event.type==="run.error"||event.phase==="error"||event.type==="tool.result"&&event.payload?.ok===false)return "error";
+  if(event.type==="gate.open"||event.type==="run.pause")return "pending";
+  if(event.type==="tool.call"||event.type==="model.request")return "running";
+  if(event.type==="verify.verdict")return event.payload?.passed===false||event.payload?.verdict==="reject"?"error":"success";
+  if(["run.end","tool.result","respond.final","receipt.commit","memory.commit"].includes(event.type))return "success";
+  return "info";
+}
+function normalizeUiEvent(event={}) {
+  const evidence=[...(event.payload?.evidenceRefs||[]),...(event.payload?.evidence||[]).flatMap(item=>typeof item==="string"?[item]:item?.id?[item.id]:[])];
+  return {
+    ...event,
+    uiId:event.id||event.uiId||id("event"),
+    at:event.at||Date.now(),
+    state:event.state||localEventState(event),
+    lens:event.lens||eventLens(event),
+    correlation:event.correlation||{evidence_refs:[...new Set(evidence)]},
+  };
+}
+const initialMessages = () => [
   { id:id("msg"), role:"assistant", at:Date.now(), content:"Ask me to research something, inspect a file, or run a multi-step task. Every action will remain visible and navigable." },
 ];
 const SESSION_KEY = "hyper_chat_sessions_v1";
 const API_BASE_KEY = "hyper_api_base";
 const MODEL_KEY = "hyper_model";
 const PROVIDER_KEY = "hyper_provider";
+const ROUTING_KEY = "hyper_model_routing";
+const ROUTES_KEY = "hyper_model_routes";
+const ROUTE_COUNTS = { ping_pong:2, ring:3, ring_pair:4, round_robin:2 };
+const ROUTING_LABEL = {
+  fallback:"Primary, then fallbacks", ping_pong:"Ping-pong · 2 model pairs",
+  ring:"Ring · 3 model pairs", ring_pair:"Ring pair · 4 model pairs",
+  round_robin:"Rotate configured routes",
+};
+
+function storedRoutes() {
+  try {
+    const value=JSON.parse(localStorage.getItem(ROUTES_KEY)||"[]");
+    return Array.isArray(value)?value.filter(route=>route?.provider&&route?.model).slice(0,4):[];
+  } catch { return []; }
+}
+
+function RoutingRouteField({index,route,providers,apiBase,onChange}) {
+  const [models,setModels]=useState([]),[state,setState]=useState("idle");
+  useEffect(()=>{
+    if(!route.provider)return;
+    let active=true;setState("loading");
+    fetch(`${apiBase.replace(/\/$/,"")}/api/models/${encodeURIComponent(route.provider)}`,{signal:AbortSignal.timeout(6500)})
+      .then(async response=>{const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error();return value;})
+      .then(value=>{if(!active)return;const list=(value.models||[]).filter(item=>item?.id);setModels(list);setState("ready");if(!route.model)onChange({...route,model:value.default_model||list[0]?.id||""});})
+      .catch(()=>{if(active){setModels([]);setState("error");}});
+    return()=>{active=false;};
+  },[route.provider]);
+  const known=models.some(item=>item.id===route.model);
+  return <div className="mcm-route-pair"><b>{String.fromCharCode(65+index)}</b><select value={route.provider} onChange={event=>{const provider=providers.find(item=>item.id===event.target.value);onChange({provider:event.target.value,model:provider?.default_model||""});}}>{providers.filter(item=>item.configured).map(item=><option value={item.id} key={item.id}>{item.label||item.id}</option>)}</select><select value={known?route.model:"__custom__"} disabled={state==="loading"} onChange={event=>onChange({...route,model:event.target.value==="__custom__"?"":event.target.value})}><option value="__custom__">{state==="loading"?"Loading…":"Custom model…"}</option>{models.map(item=><option value={item.id} key={item.id}>{item.name||item.id}</option>)}</select>{!known&&<input value={route.model} onChange={event=>onChange({...route,model:event.target.value})} placeholder="Model ID"/>}</div>;
+}
 
 function freshSession() {
-  return { id:`local:${crypto.randomUUID()}`, title:"New chat", backendSessionId:null, messages:[...INITIAL_MESSAGES], runs:[], updatedAt:Date.now() };
+  return { id:`local:${crypto.randomUUID()}`, title:"New chat", backendSessionId:null, messages:initialMessages(), runs:[], updatedAt:Date.now() };
+}
+
+function uniqueMessages(messages=[]) {
+  const seen=new Set();
+  return messages.map(message=>{
+    const messageId=typeof message.id==="string"&&message.id&&!seen.has(message.id)?message.id:id("msg");
+    seen.add(messageId);
+    return messageId===message.id?message:{...message,id:messageId};
+  });
 }
 
 function storedSessions() {
   try {
     const parsed=JSON.parse(localStorage.getItem(SESSION_KEY) || "[]");
-    return Array.isArray(parsed) && parsed.length ? parsed : [freshSession()];
+    return Array.isArray(parsed) && parsed.length
+      ? parsed.map(session=>({...session,messages:uniqueMessages(session.messages)}))
+      : [freshSession()];
   } catch {
     return [freshSession()];
   }
@@ -74,7 +147,7 @@ export function MorphChatModal() {
   const [sessions, setSessions] = useState(storedSessions);
   const [activeSessionId, setActiveSessionId] = useState(() => localStorage.getItem("hyper_active_chat"));
   const initialSession = sessions.find(item=>item.id===activeSessionId) || sessions[0];
-  const [messages, setMessages] = useState(initialSession.messages || INITIAL_MESSAGES);
+  const [messages, setMessages] = useState(initialSession.messages?.length ? uniqueMessages(initialSession.messages) : initialMessages());
   const [input, setInput] = useState("");
   const [shape, setShape] = useState("chat");
   const [run, setRun] = useState(null);
@@ -89,6 +162,12 @@ export function MorphChatModal() {
   const [apiBase, setApiBase] = useState(() => localStorage.getItem(API_BASE_KEY) || "");
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem(MODEL_KEY) || "");
   const [selectedProvider, setSelectedProvider] = useState(() => localStorage.getItem(PROVIDER_KEY) || "");
+  const [routingMode, setRoutingMode] = useState(() => localStorage.getItem(ROUTING_KEY) || "fallback");
+  const [routingRoutes, setRoutingRoutes] = useState(storedRoutes);
+  const [agentAutonomous, setAgentAutonomous] = useState(Boolean(initialSession.agent?.autonomous));
+  const [autoMode, setAutoMode] = useState(Boolean(initialSession.agent?.autoMode));
+  const [autoMaxSteps, setAutoMaxSteps] = useState(initialSession.agent?.autoMaxSteps || 24);
+  const [agentInstructions, setAgentInstructions] = useState(initialSession.agent?.instructions || "");
   const [providerCatalog, setProviderCatalog] = useState([]);
   const [modelOptions, setModelOptions] = useState([]);
   const [modelsState, setModelsState] = useState("idle");
@@ -97,9 +176,15 @@ export function MorphChatModal() {
   const [operatorPanel, setOperatorPanel] = useState(null);
   const [profile, setProfile] = useState(() => localStorage.getItem("hyper_profile") || "inspect");
   const [sessionId, setSessionId] = useState(initialSession.backendSessionId || null);
+  const [attachments, setAttachments] = useState([]);
+  const [embeddingState, setEmbeddingState] = useState({profile_id:"lexical",profiles:[],locked_at:null});
+  const [linkedFiles, setLinkedFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
   const abortRef = useRef(null);
   const demoToken = useRef(0);
-  const endRef = useRef(null);
+  const timelineRef = useRef(null);
+  const followTimelineRef = useRef(true);
   const activeRunIdRef = useRef(null);
   const bootedRef = useRef(false);
 
@@ -114,6 +199,23 @@ export function MorphChatModal() {
   const timelineRuns = [...pastRuns.filter(item => item.id !== run?.id), ...(run ? [run] : [])];
 
   const apiUrl = (path, base=apiBase) => `${base.replace(/\/$/, "")}${path}`;
+  const activeRoutingRoutes = () => {
+    const count=ROUTE_COUNTS[routingMode]||1;
+    return Array.from({length:count},(_,index)=>index===0
+      ? {provider:selectedProvider,model:selectedModel}
+      : routingRoutes[index]||{provider:"",model:""}).filter(route=>route.provider&&route.model);
+  };
+  const chooseRoutingMode = mode => {
+    setRoutingMode(mode);localStorage.setItem(ROUTING_KEY,mode);
+    const count=ROUTE_COUNTS[mode]||1;
+    setRoutingRoutes(current=>Array.from({length:count},(_,index)=>{
+      if(index===0)return {provider:selectedProvider,model:selectedModel};
+      if(current[index]?.provider&&current[index]?.model)return current[index];
+      const used=new Set([selectedProvider,...current.slice(1,index).map(route=>route?.provider)]);
+      const provider=providerCatalog.find(item=>item.configured&&!used.has(item.id))||providerCatalog.find(item=>item.configured);
+      return {provider:provider?.id||"",model:provider?.default_model||""};
+    }));
+  };
 
   async function loadProviderModels(providerId, base=apiBase, fallbackModel="") {
     if (!providerId) return;
@@ -153,6 +255,18 @@ export function MorphChatModal() {
       if (!response.ok) throw new Error();
       const config=await response.json();
       setBackendInfo(config);
+      setEmbeddingState(current=>current.profiles?.length?current:{...current,profiles:config.memory?.embedding_profiles||[],profile_id:config.memory?.embedding_profiles?.find(item=>item.available&&item.id!=="lexical")?.id||"lexical"});
+      setAutoMaxSteps(current=>Math.min(current||24,config.auto_run?.max_steps||24));
+      setRoutingMode(current=>{
+        const modes=config.model_routing?.modes || ["fallback"];
+        const next=modes.includes(current) ? current : config.model_routing?.mode || modes[0];
+        localStorage.setItem(ROUTING_KEY,next);
+        return next;
+      });
+      if(config.model_routing?.route_schedule?.length&&!routingRoutes.length){
+        setRoutingRoutes(config.model_routing.route_schedule);
+        localStorage.setItem(ROUTES_KEY,JSON.stringify(config.model_routing.route_schedule));
+      }
       let discovered=config.providers || [];
       try {
         const providersResponse=await fetch(apiUrl("/api/providers",base),{signal:AbortSignal.timeout(6500)});
@@ -194,6 +308,17 @@ export function MorphChatModal() {
     void connectBackend();
   });
 
+  useEffect(()=>{
+    setRoutingRoutes(current=>{
+      const count=ROUTE_COUNTS[routingMode]||1;
+      const next=Array.from({length:count},(_,index)=>index===0
+        ? {provider:selectedProvider,model:selectedModel}
+        : current[index]||{provider:"",model:""});
+      localStorage.setItem(ROUTES_KEY,JSON.stringify(next));
+      return next;
+    });
+  },[selectedProvider,selectedModel,routingMode]);
+
   useEffect(() => {
     if (!activeSessionId) {
       setActiveSessionId(initialSession.id);
@@ -218,17 +343,24 @@ export function MorphChatModal() {
 
   useEffect(() => {
     if (!working) return undefined;
-    const timer = setInterval(() => setElapsed((Date.now() - run.startedAt) / 1000), 100);
+    setElapsed((Date.now() - run.startedAt) / 1000);
+    const timer = setInterval(() => setElapsed((Date.now() - run.startedAt) / 1000), 1000);
     return () => clearInterval(timer);
   }, [working, run?.startedAt]);
 
   useEffect(() => {
-    if (shape === "chat") endRef.current?.scrollIntoView({ behavior:"smooth", block:"end" });
+    if (shape !== "chat" || !followTimelineRef.current || !timelineRef.current) return undefined;
+    const frame=requestAnimationFrame(()=>{
+      const timeline=timelineRef.current;
+      if(timeline)timeline.scrollTop=timeline.scrollHeight;
+    });
+    return ()=>cancelAnimationFrame(frame);
   }, [messages, events.length, shape]);
 
   function beginRun(text, source) {
     const next = { id:id("run"), source, prompt:text, startedAt:Date.now(), status:"running", events:[] };
     activeRunIdRef.current = next.id;
+    followTimelineRef.current = true;
     setMessages(items => [...items, { id:id("msg"), role:"user", content:text, runId:next.id, at:next.startedAt }]);
     setRun(next); setElapsed(0); setSelectedEventId(null); setShape("chat"); setTab("action");
     return next;
@@ -242,10 +374,11 @@ export function MorphChatModal() {
       setSessions(current=>{
         const serverSessions=(data.sessions||[]).map(server=>{
           const existing=current.find(item=>item.backendSessionId===server.id||item.id===server.id);
-          return existing ? { ...existing, backendSessionId:server.id, title:server.title, updatedAt:Date.parse(server.updatedAt) } : {
+          return existing ? { ...existing, backendSessionId:server.id, title:server.title, agent:server.agent, updatedAt:Date.parse(server.updatedAt) } : {
             id:server.id,
             backendSessionId:server.id,
             title:server.title,
+            agent:server.agent,
             messages:[],
             runs:[],
             updatedAt:Date.parse(server.updatedAt),
@@ -263,18 +396,36 @@ export function MorphChatModal() {
     if (working) return;
     setActiveSessionId(next.id);
     localStorage.setItem("hyper_active_chat", next.id);
-    setMessages(next.messages || INITIAL_MESSAGES);
+    setMessages(next.messages?.length ? uniqueMessages(next.messages) : initialMessages());
     setPastRuns(next.runs || []);
     setSessionId(next.backendSessionId || null);
     setRun(null);
     setPendingApproval(null);
+    setAttachments([]);
+    setLinkedFiles([]);
+    if (next.agent) {
+      if (next.agent.profile) { setProfile(next.agent.profile); localStorage.setItem("hyper_profile",next.agent.profile); }
+      if (next.agent.provider) { setSelectedProvider(next.agent.provider); localStorage.setItem(PROVIDER_KEY,next.agent.provider); }
+      if (next.agent.model) { setSelectedModel(next.agent.model); localStorage.setItem(MODEL_KEY,next.agent.model); }
+      if (next.agent.routingMode) { setRoutingMode(next.agent.routingMode); localStorage.setItem(ROUTING_KEY,next.agent.routingMode); }
+      if (next.agent.routingRoutes?.length) { setRoutingRoutes(next.agent.routingRoutes); localStorage.setItem(ROUTES_KEY,JSON.stringify(next.agent.routingRoutes)); }
+      setAgentAutonomous(Boolean(next.agent.autonomous));
+      setAutoMode(Boolean(next.agent.autoMode));
+      setAutoMaxSteps(next.agent.autoMaxSteps||backendInfo?.auto_run?.max_steps||24);
+      setAgentInstructions(next.agent.instructions || "");
+    } else {
+      setAgentAutonomous(false);
+      setAutoMode(false);
+      setAgentInstructions("");
+    }
     setShape("chat");
     const backendId=next.backendSessionId || (next.id.startsWith("session:") ? next.id : null);
     if (!backendId || backendState !== "online") return;
     try {
-      const [messageResponse,runResponse]=await Promise.all([
+      const [messageResponse,runResponse,fileResponse]=await Promise.all([
         fetch(apiUrl(`/api/sessions/${encodeURIComponent(backendId)}/messages`)),
         fetch(apiUrl(`/api/runs?session_id=${encodeURIComponent(backendId)}`)),
+        fetch(apiUrl(`/api/sessions/${encodeURIComponent(backendId)}/files`)),
       ]);
       if (!messageResponse.ok || !runResponse.ok) return;
       const serverMessages=((await messageResponse.json()).messages || []).map(message=>({
@@ -282,14 +433,15 @@ export function MorphChatModal() {
         at:typeof message.at==="string" ? Date.parse(message.at) : message.at,
       }));
       const serverRuns=(await runResponse.json()).runs || [];
+      if(fileResponse.ok){const fileData=await fileResponse.json();setAttachments(fileData.files||[]);setEmbeddingState(fileData.embedding||{profile_id:"lexical",profiles:[],locked_at:null});}
       const hydrated=await Promise.all(serverRuns.slice(0,12).map(async item=>{
         try {
           const response=await fetch(apiUrl(`/api/runs/${encodeURIComponent(item.id)}/trail`));
           const data=response.ok ? await response.json() : { events:[] };
-          return { id:item.id,backendId:item.id,source:"runtime",prompt:item.objective,status:item.status,startedAt:Date.parse(item.startedAt),endedAt:item.endedAt?Date.parse(item.endedAt):undefined,events:(data.events||[]).map(event=>({...event,uiId:event.uiId||id("event")})) };
+          return { id:item.id,backendId:item.id,source:"runtime",prompt:item.objective,status:item.status,startedAt:Date.parse(item.startedAt),endedAt:item.endedAt?Date.parse(item.endedAt):undefined,trailSummary:data.summary,trailIntegrity:data.integrity,events:(data.events||[]).map(normalizeUiEvent) };
         } catch { return { id:item.id,backendId:item.id,source:"runtime",prompt:item.objective,status:item.status,startedAt:Date.parse(item.startedAt),events:[] }; }
       }));
-      setMessages(serverMessages.length ? serverMessages : INITIAL_MESSAGES);
+      setMessages(serverMessages.length ? uniqueMessages(serverMessages) : initialMessages());
       setPastRuns(hydrated);
       setSessionId(backendId);
     } catch (error) {
@@ -312,7 +464,43 @@ export function MorphChatModal() {
     await openSession(next);
   }
 
-  function saveSettings(event) {
+  async function ensureBackendSession() {
+    if(sessionId)return sessionId;
+    if(backendState!=="online")throw new Error("Connect the runtime before uploading files.");
+    const response=await fetch(apiUrl("/api/sessions"),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:messages.find(message=>message.role==="user")?.content.slice(0,60)||"New chat"})});
+    if(!response.ok)throw new Error(`session creation returned ${response.status}`);
+    const server=(await response.json()).session;
+    setSessionId(server.id);
+    setSessions(items=>items.map(item=>item.id===activeSessionId?{...item,backendSessionId:server.id}:item));
+    return server.id;
+  }
+
+  async function uploadFiles(event) {
+    const files=[...(event.target.files||[])].slice(0,4);
+    event.target.value="";
+    if(!files.length||uploading)return;
+    setUploading(true);setBackendError("");
+    try{
+      const backendSession=await ensureBackendSession();
+      const form=new FormData();files.forEach(file=>form.append("files",file));
+      const response=await fetch(apiUrl(`/api/sessions/${encodeURIComponent(backendSession)}/files`),{method:"POST",body:form});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(data.error||`upload returned ${response.status}`);
+      setAttachments(current=>[...(data.files||[]),...current.filter(item=>!(data.files||[]).some(next=>next.id===item.id))]);
+      const status=await fetch(apiUrl(`/api/sessions/${encodeURIComponent(backendSession)}/files`)).then(value=>value.ok?value.json():null).catch(()=>null);
+      if(status?.embedding)setEmbeddingState(status.embedding);
+    }catch(error){setBackendError(error.message||"File upload failed");}
+    finally{setUploading(false);}
+  }
+
+  async function deleteAttachment(fileId) {
+    if(!sessionId||working)return;
+    const response=await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}`),{method:"DELETE"});
+    if(response.ok)setAttachments(items=>items.filter(item=>item.id!==fileId));
+    else setBackendError("Could not remove the uploaded file.");
+  }
+
+  async function saveSettings(event) {
     event.preventDefault();
     const base=new FormData(event.currentTarget).get("apiBase")?.toString().trim().replace(/\/$/, "") || "";
     const model=selectedModel.trim();
@@ -320,14 +508,48 @@ export function MorphChatModal() {
     localStorage.setItem(API_BASE_KEY, base);
     localStorage.setItem(MODEL_KEY, model);
     localStorage.setItem(PROVIDER_KEY, selectedProvider);
+    localStorage.setItem(ROUTING_KEY, routingMode);
+    const routes=activeRoutingRoutes();
+    localStorage.setItem(ROUTES_KEY,JSON.stringify(routes));
+    if (sessionId) {
+      try {
+        const response=await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/agent`,base),{
+          method:"PUT",
+          headers:{"content-type":"application/json"},
+          body:JSON.stringify({
+            autonomous:agentAutonomous,
+            auto_mode:autoMode,
+            auto_max_steps:autoMaxSteps,
+            instructions:agentInstructions,
+            profile,
+            provider:selectedProvider,
+            model,
+            routing_mode:routingMode,
+            fallback_providers:backendInfo?.model_routing?.fallback_chain || [],
+            routing_routes:routes,
+          }),
+        });
+        if(response.ok){
+          const agent=(await response.json()).agent;
+          setSessions(items=>items.map(item=>item.id===activeSessionId?{...item,agent}:item));
+        }
+        if(!embeddingState.locked_at){
+          const embeddingResponse=await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/embedding`,base),{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({profile_id:embeddingState.profile_id})});
+          const embeddingData=await embeddingResponse.json().catch(()=>({}));
+          if(!embeddingResponse.ok)throw new Error(embeddingData.error||"Embedding profile could not be saved");
+        }
+      } catch { /* Runtime settings still remain device-local. */ }
+    }
     setSettingsOpen(false);
     setTimeout(()=>void connectBackend(base), 0);
   }
 
   function ingest(event) {
-    const normalized = { ...event, uiId:event.uiId || id("event"), at:event.at || Date.now() };
-    setRun(previous => previous ? { ...previous, events:[...previous.events, normalized] } : previous);
-    setSelectedEventId(normalized.uiId);
+    const normalized = normalizeUiEvent(event);
+    setRun(previous => previous ? {
+      ...previous,
+      events:previous.events.some(item=>item.uiId===normalized.uiId) ? previous.events : [...previous.events, normalized],
+    } : previous);
     if (event.type === "respond.final" && event.payload?.text) {
       setMessages(items => [...items, { id:id("msg"), role:"assistant", content:event.payload.text, runId:activeRunIdRef.current, at:normalized.at }]);
     }
@@ -353,16 +575,20 @@ export function MorphChatModal() {
       if (forceDemo) throw new Error("guided-demo");
       const response = await fetch(apiUrl("/api/chat"), {
         method:"POST", signal:abortRef.current.signal, headers:{ "content-type":"application/json" },
-        body:JSON.stringify({ message:text, session_id:sessionId, profile, provider:selectedProvider || backendInfo?.provider, model:selectedModel || backendInfo?.model }),
+        body:JSON.stringify({
+          message:text,
+          session_id:sessionId,
+          profile,
+          provider:selectedProvider || backendInfo?.provider,
+          model:selectedModel || backendInfo?.model,
+          routing_mode:routingMode,
+          fallback_providers:backendInfo?.model_routing?.fallback_chain || [],
+          routing_routes:activeRoutingRoutes(),
+          auto_mode:autoMode,
+          linked_files:linkedFiles.map(file=>file.scope==="workspace"?{scope:"workspace",path:file.path}:{scope:"session",id:file.id}),
+        }),
       });
-      if (!response.ok || !response.body) throw new Error(`runtime returned ${response.status}`);
-      setBackendState("online");
-      await readSse(response, frame => {
-        if (frame.kind === "meta") {
-          if (frame.session_id) { setSessionId(frame.session_id); localStorage.setItem("shovs_session", frame.session_id); }
-          setRun(previous => previous ? { ...previous, backendId:frame.run_id } : previous);
-        } else if (frame.kind === "event") ingest(frame.event);
-      });
+      await consumeRuntimeStream(response);
       setRun(previous => previous?.status === "running" ? { ...previous, status:"complete", endedAt:Date.now() } : previous);
     } catch (error) {
       if (error.name === "AbortError") return;
@@ -375,6 +601,39 @@ export function MorphChatModal() {
         ingest({ type:"run.error", phase:"error", summary:error.message || "Runtime connection failed", payload:{}, run_id:started.id });
         setMessages(items=>[...items,{ id:id("msg"), role:"assistant", content:`Backend connection failed: ${error.message}. Open Settings to check the runtime URL, then reconnect.`, runId:started.id, at:Date.now() }]);
       }
+    }
+  }
+
+  async function consumeRuntimeStream(response) {
+    if (!response.ok || !response.body) throw new Error(`runtime returned ${response.status}`);
+    setBackendState("online");
+    await readSse(response, frame => {
+      if (frame.kind === "meta") {
+        if (frame.session_id) { setSessionId(frame.session_id); localStorage.setItem("shovs_session", frame.session_id); }
+        setRun(previous => previous ? {
+          ...previous,
+          backendId:frame.run_id,
+          streamContract:{version:frame.stream_version,eventSchema:frame.event_schema_version,evidenceClass:frame.evidence_class},
+          provider:frame.provider,
+          model:frame.model,
+          profile:frame.profile,
+        } : previous);
+      } else if (frame.kind === "event") ingest(frame.event);
+    });
+  }
+
+  async function resumeRun(source) {
+    if (working || !source?.id) return;
+    setOperatorPanel(null);
+    beginRun(`Resume ${source.objective || source.prompt || source.id}`, "checkpoint continuation");
+    abortRef.current = new AbortController();
+    try {
+      const response=await fetch(apiUrl(`/api/runs/${encodeURIComponent(source.id)}/resume`),{method:"POST",signal:abortRef.current.signal});
+      await consumeRuntimeStream(response);
+      setRun(previous=>previous?.status==="running"?{...previous,status:"complete",endedAt:Date.now()}:previous);
+    } catch(error) {
+      if(error.name==="AbortError")return;
+      ingest({type:"run.error",phase:"error",title:"Checkpoint continuation failed",detail:error.message||"Runtime connection failed",payload:{}});
     }
   }
 
@@ -445,15 +704,27 @@ export function MorphChatModal() {
       <aside className="mcm-session-rail">
         <div className="mcm-session-head"><div><small>Workspace</small><strong>Chats</strong></div><button onClick={newChat} disabled={working} title="New chat"><Plus size={15}/></button></div>
         <button className="mcm-new-chat" onClick={newChat} disabled={working}><Plus size={14}/>New chat</button>
-        <nav className="mcm-library-nav" aria-label="Operator data views"><button onClick={()=>setOperatorPanel("runs")}><History size={12}/>Runs</button><button onClick={()=>setOperatorPanel("memory")}><Database size={12}/>Memory</button><button onClick={()=>setOperatorPanel("tools")}><Wrench size={12}/>Tools</button><button onClick={()=>setOperatorPanel("schedules")}><Clock3 size={12}/>Schedules</button><button onClick={()=>setOperatorPanel("signals")}><Activity size={12}/>Signals</button><button onClick={()=>setOperatorPanel("corrections")}><ListChecks size={12}/>Corrections</button><button onClick={()=>setOperatorPanel("scorecard")}><ListChecks size={12}/>Score</button></nav>
+        <nav className="mcm-library-nav" aria-label="Operator data views"><button onClick={()=>setOperatorPanel("files")}><FolderOpen size={12}/>Files</button><button onClick={()=>setOperatorPanel("runs")}><History size={12}/>Runs</button><button onClick={()=>setOperatorPanel("memory")}><Database size={12}/>Memory</button><button onClick={()=>setOperatorPanel("tools")}><Wrench size={12}/>Tools</button><button onClick={()=>setOperatorPanel("schedules")}><Clock3 size={12}/>Schedules</button><button onClick={()=>setOperatorPanel("signals")}><Activity size={12}/>Signals</button><button onClick={()=>setOperatorPanel("corrections")}><ListChecks size={12}/>Corrections</button><button onClick={()=>setOperatorPanel("scorecard")}><ListChecks size={12}/>Score</button></nav>
         <div className="mcm-session-list">{[...sessions].sort((a,b)=>b.updatedAt-a.updatedAt).map(item=><button key={item.id} className={item.id===activeSessionId?"active":""} onClick={()=>openSession(item)}><MessageSquare size={13}/><span><strong>{item.title}</strong><small>{item.runs?.length || 0} runs</small></span></button>)}</div>
         <div className={`mcm-connection-card ${backendState}`}><span className={`mcm-backend-dot ${backendState}`}/><div><strong>{backendState === "online" ? "Backend connected" : backendState === "checking" ? "Connecting…" : "Backend offline"}</strong><small>{backendState === "online" ? `${selectedProvider || backendInfo?.provider} · ${selectedModel || backendInfo?.model}` : backendError || "Start with bun run dev"}</small></div><button onClick={()=>void connectBackend()} title="Reconnect"><RotateCw size={13}/></button></div>
       </aside>
       <section className={`mcm-shell shape-${shape} ${working ? "is-working" : "is-idle"}`} style={{ "--mcm-phase":PHASE_COLOR[currentView.phase] || PHASE_COLOR.model }}>
         <div className="mcm-shape-code" aria-hidden="true"><span>[~]</span><ChevronRight size={12}/><span className={working ? "active":""}>[{`{~}`} ]</span><ChevronRight size={12}/><span className={shape === "inspect" ? "active":""}>{`{[…]}`}</span></div>
 
-        {settingsOpen&&<div className="mcm-settings-overlay" role="dialog" aria-modal="true" aria-label="Runtime settings"><form className="mcm-settings" onSubmit={saveSettings}><header><div><Server size={17}/><span><strong>Runtime settings</strong><small>Live provider, model, and authority for new runs</small></span></div><button type="button" onClick={()=>setSettingsOpen(false)}><X size={15}/></button></header><label>Backend URL<input name="apiBase" defaultValue={apiBase} placeholder="Same origin (/api proxy)"/><small>Leave empty when using bun run dev. Use a full URL for a separately hosted backend.</small></label><label>Provider<select value={selectedProvider} onChange={event=>void chooseProvider(event.target.value)}>{providerCatalog.map(item=><option key={item.id} value={item.id} disabled={!item.configured}>{item.label || item.id} · {!item.configured?"not configured":item.connected===true?"connected":item.connected===false?"offline":"configured"}</option>)}</select><small>Connections are probed by the backend; credentials never enter the browser.</small></label><label>Model<select value={modelOptions.some(item=>item.id===selectedModel)?selectedModel:"__custom__"} onChange={event=>setSelectedModel(event.target.value==="__custom__"?"":event.target.value)} disabled={modelsState==="loading"}><option value="__custom__">{modelsState==="loading"?"Discovering models…":"Custom model ID…"}</option>{modelOptions.map(item=><option value={item.id} key={item.id}>{item.name || item.id}</option>)}</select>{!modelOptions.some(item=>item.id===selectedModel)&&<input value={selectedModel} onChange={event=>setSelectedModel(event.target.value)} placeholder="Model ID"/>}<small className={modelsState==="error"?"error":""}>{modelsError || `${modelOptions.length} live model${modelOptions.length===1?"":"s"} discovered`}</small></label><label>Capability scope<select value={profile} onChange={event=>{setProfile(event.target.value);localStorage.setItem("hyper_profile",event.target.value);}}>{(backendInfo?.profiles || ["inspect"]).map(value=><option value={value} key={value}>{value}</option>)}</select></label>{backendInfo&&<div className="mcm-runtime-contract"><small>Connected runtime contract</small><div>{(backendInfo.capabilities||[]).map(item=><span key={item.id}>{item.id}</span>)}</div><p>Approval at risk {backendInfo.approval_thresholds?.[profile] ?? "—"} · observed-state verification · verified receipts only · semantic claim truth is not automatic</p><p>{(backendInfo.limitations||[]).map(value=>value.replaceAll("_"," ")).join(" · ")}</p></div>}<footer><button type="button" onClick={()=>void connectBackend()}><RotateCw size={13}/>Probe connections</button><button className="primary" type="submit" disabled={!selectedProvider||!selectedModel}>Save settings</button></footer></form></div>}
-        {operatorPanel&&<OperatorPanel panel={operatorPanel} onPanelChange={setOperatorPanel} apiBase={apiBase} profiles={backendInfo?.profiles||["inspect"]} providers={providerCatalog} selectedProvider={selectedProvider} selectedModel={selectedModel} modelOptions={modelOptions} allowedHosts={backendInfo?.capabilities?.find(item=>item.id==="network.http.get")?.targetPatterns||[]} onClose={()=>setOperatorPanel(null)}/>}
+        {settingsOpen&&<div className="mcm-settings-overlay" role="dialog" aria-modal="true" aria-label="Runtime settings"><form className="mcm-settings" onSubmit={saveSettings}>
+          <header><div><Server size={17}/><span><strong>Runtime settings</strong><small>Live models, pass routing, and authority</small></span></div><button type="button" onClick={()=>setSettingsOpen(false)}><X size={15}/></button></header>
+          <label>Backend URL<input name="apiBase" defaultValue={apiBase} placeholder="Same origin (/api proxy)"/><small>Leave empty when using bun run dev.</small></label>
+          <label>Route A provider<select value={selectedProvider} onChange={event=>void chooseProvider(event.target.value)}>{providerCatalog.map(item=><option key={item.id} value={item.id} disabled={!item.configured}>{item.label||item.id} · {!item.configured?"not configured":item.connected===false?"offline":"ready"}</option>)}</select><small>Credentials stay in the backend.</small></label>
+          <label>Route A model<select value={modelOptions.some(item=>item.id===selectedModel)?selectedModel:"__custom__"} onChange={event=>setSelectedModel(event.target.value==="__custom__"?"":event.target.value)} disabled={modelsState==="loading"}><option value="__custom__">{modelsState==="loading"?"Discovering models…":"Custom model ID…"}</option>{modelOptions.map(item=><option value={item.id} key={item.id}>{item.name||item.id}</option>)}</select>{!modelOptions.some(item=>item.id===selectedModel)&&<input value={selectedModel} onChange={event=>setSelectedModel(event.target.value)} placeholder="Model ID"/>}<small className={modelsState==="error"?"error":""}>{modelsError||`${modelOptions.length} live models discovered`}</small></label>
+          <label>Pass routing<select value={routingMode} onChange={event=>chooseRoutingMode(event.target.value)}>{(backendInfo?.model_routing?.modes||["fallback"]).map(value=><option value={value} key={value}>{ROUTING_LABEL[value]||value}</option>)}</select><small>Each scheduled route automatically falls through the remaining routes on failure.</small></label>
+          {(ROUTE_COUNTS[routingMode]||1)>1&&<section className="mcm-route-editor"><small>Provider / model pairs</small>{routingRoutes.slice(1,ROUTE_COUNTS[routingMode]).map((route,index)=><RoutingRouteField key={index+1} index={index+1} route={route} providers={providerCatalog} apiBase={apiBase} onChange={next=>setRoutingRoutes(current=>current.map((item,itemIndex)=>itemIndex===index+1?next:item))}/>)}</section>}
+          <label>Capability scope<select value={profile} onChange={event=>{const next=event.target.value;setProfile(next);if(next==="partner")setAgentAutonomous(true);localStorage.setItem("hyper_profile",next);}}>{(backendInfo?.profiles||["inspect"]).map(value=><option value={value} key={value}>{backendInfo?.profile_details?.[value]?.label||value}</option>)}</select><small>{profile==="partner"?"Uses all configured tools, session memory, strict approvals, and verified completion.":"Only tools in this scope can be proposed."}</small></label>
+          <label>Session embedding profile<select value={embeddingState.profile_id||"lexical"} disabled={Boolean(embeddingState.locked_at)} onChange={event=>setEmbeddingState(current=>({...current,profile_id:event.target.value}))}>{(embeddingState.profiles?.length?embeddingState.profiles:backendInfo?.memory?.embedding_profiles||[]).map(item=><option key={item.id} value={item.id} disabled={!item.available}>{item.label} · {item.available?"ready":"unavailable"}</option>)}</select><small>{embeddingState.locked_at?`Locked after ingestion · ${embeddingState.model||embeddingState.profile_id}. New session or reindex required to change vector space.`:"Choose once before the first upload. Retrieval queries and documents use the same pinned vector space."}</small></label>
+          <details className="mcm-agent-settings"><summary>Session agent</summary><label><span><input type="checkbox" checked={agentAutonomous} onChange={event=>setAgentAutonomous(event.target.checked)}/> Keep as a reusable agent</span><small>This chat retains its route schedule, scope, history, and verified memory.</small></label><label><span><input type="checkbox" checked={autoMode} onChange={event=>setAutoMode(event.target.checked)}/> Bounded auto mode</span><small>Resolves reversible preferences and continues until verified, blocked, or budget-limited. It never expands authority.</small></label>{autoMode&&<label>Maximum autonomous steps<input type="number" min="1" max={backendInfo?.auto_run?.max_steps||24} value={autoMaxSteps} onChange={event=>setAutoMaxSteps(Math.max(1,Number(event.target.value)||1))}/><small>Server ceiling {backendInfo?.auto_run?.max_steps||24} steps · {Math.round((backendInfo?.auto_run?.max_wall_time_ms||600000)/60000)} minute wall-time limit.</small></label>}<label>Standing instructions<textarea rows={3} value={agentInstructions} onChange={event=>setAgentInstructions(event.target.value)} placeholder="Optional constraints for this session agent"/></label></details>
+          {backendInfo&&<div className="mcm-runtime-contract"><small>Connected runtime contract</small><div>{(backendInfo.capabilities||[]).map(item=><span key={item.id}>{item.id}</span>)}</div><p>Approval at risk {backendInfo.approval_thresholds?.[profile]??"—"} · observed-state verification · route changes never change authority</p></div>}
+          <footer><button type="button" onClick={()=>void connectBackend()}><RotateCw size={13}/>Probe connections</button><button className="primary" type="submit" disabled={!selectedProvider||!selectedModel||activeRoutingRoutes().length!==(ROUTE_COUNTS[routingMode]||1)}>Save settings</button></footer>
+        </form></div>}
+        {operatorPanel==="files"?<FileExplorer apiBase={apiBase} sessionId={sessionId} linkedFiles={linkedFiles} onLink={file=>setLinkedFiles(current=>current.some(item=>(item.id||item.path)===(file.id||file.path))?current:[...current,file])} onClose={()=>setOperatorPanel(null)}/>:operatorPanel&&<OperatorPanel panel={operatorPanel} onPanelChange={setOperatorPanel} apiBase={apiBase} sessionId={sessionId} sessionAgentEnabled={agentAutonomous} profiles={backendInfo?.profiles||["inspect"]} providers={providerCatalog} selectedProvider={selectedProvider} selectedModel={selectedModel} modelOptions={modelOptions} allowedHosts={backendInfo?.capabilities?.find(item=>item.id==="network.http.get")?.targetPatterns||[]} onResume={resumeRun} onClose={()=>setOperatorPanel(null)}/>}
 
         {shape === "inspect" ? (
           <Inspector
@@ -467,21 +738,29 @@ export function MorphChatModal() {
               <div className="mcm-avatar-wrap"><BlobAvatar state={working ? "running":"idle"} size={38}/></div>
               <div className="mcm-title"><h2>Hyper operator</h2><p><span className={`mcm-backend-dot ${backendState}`}/>{backendState === "online" ? `${backendInfo?.runtime || "runtime"} · ${selectedProvider || backendInfo?.provider || "provider"} · ${selectedModel || backendInfo?.model || "default"}` : backendState === "checking" ? "checking runtime" : "backend offline"}</p></div>
               <button className="mcm-icon-btn" onClick={newChat} title="New chat"><Plus size={15}/></button>
+              <button className="mcm-icon-btn" onClick={()=>setOperatorPanel("files")} title="Browse and link files"><FolderOpen size={15}/></button>
               <button className="mcm-icon-btn" onClick={()=>setOperatorPanel("runs")} title="Operator library"><Layers3 size={15}/></button>
               <button className="mcm-icon-btn" onClick={()=>setSettingsOpen(true)} title="Runtime settings"><Settings2 size={15}/></button>
               <button className="mcm-icon-btn" onClick={()=>{setTab("history");setShape("inspect");}} title="Open turn history"><History size={15}/></button>
             </header>
 
-            <ChatTimeline messages={messages} runs={timelineRuns} working={working} onInspect={inspectEvent} endRef={endRef}/>
+            <ChatTimeline messages={messages} runs={timelineRuns} working={working} onInspect={inspectEvent} timelineRef={timelineRef} onTimelineScroll={event=>{
+              const node=event.currentTarget;
+              followTimelineRef.current=node.scrollHeight-node.scrollTop-node.clientHeight<72;
+            }}/>
 
             <div className="mcm-control-dock">
+              {!working&&(attachments.length>0||linkedFiles.length>0)&&<div className="mcm-attachment-strip" aria-label="Session and linked files">{linkedFiles.map(file=><span key={`link:${file.id||file.path}`} className="linked" title={`Explicitly linked from ${file.scope}`}><Link2 size={11}/><b>{file.name}</b><small>{file.scope}</small><button onClick={()=>setLinkedFiles(items=>items.filter(item=>(item.id||item.path)!==(file.id||file.path)))} aria-label={`Unlink ${file.name}`}><X size={10}/></button></span>)}{attachments.map(file=><span key={file.id} className={file.status==="ready"?"ready":"limited"} title={file.limitation||`${file.retrievalMode} retrieval`}><FileText size={11}/><b>{file.name}</b><small>{file.retrievalMode}</small><button onClick={()=>void deleteAttachment(file.id)} aria-label={`Remove ${file.name}`}><X size={10}/></button></span>)}</div>}
               {pendingApproval ? <div className="mcm-approval-gate"><span><CircleStop size={16}/></span><div><small>Proposal-scoped approval</small><strong>{pendingApproval.payload?.capabilityId}</strong><p>{pendingApproval.payload?.target} · risk {pendingApproval.payload?.risk} · {(pendingApproval.payload?.declaredEffects||[]).join(", ")}</p></div><button className="reject" onClick={()=>void resolveApproval(false)}>Reject</button><button className="approve" onClick={()=>void resolveApproval(true)}>Approve once</button></div> : <div className={`mcm-parent-shape ${working ? "agent":"input"}`}>
                 {working ? (
                   <AgentCapsule view={currentView} elapsed={elapsed} phaseIndex={phaseIndex} events={events} tools={toolCalls.length} onOpen={()=>{setTab("action");setShape("inspect");}} onStop={stopRun}/>
                 ) : (
                   <div className="mcm-input-shape">
+                    <input ref={fileInputRef} type="file" multiple hidden onChange={uploadFiles}/>
+                    <button className="mcm-attach" onClick={()=>fileInputRef.current?.click()} disabled={uploading||backendState!=="online"} title={backendInfo?.features?.embeddings?`Upload session files · hybrid retrieval with ${backendInfo?.memory?.embedding_model}`:"Upload session files · lexical, temporal, and relationship retrieval"}>{uploading?<Loader2 size={15}/>:<Paperclip size={15}/>}</button>
+                    <button className="mcm-attach" onClick={()=>setOperatorPanel("files")} disabled={backendState!=="online"} title="Browse workspace and session files"><Folder size={15}/></button>
                     <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key === "Enter" && !e.shiftKey){e.preventDefault();sendMessage();}}} placeholder="Ask for a multi-step task…" rows={1}/>
-                    <label className="mcm-profile-select" title="Capability authority for this run"><span>scope</span><select value={profile} onChange={event=>{setProfile(event.target.value);localStorage.setItem("hyper_profile",event.target.value);}}>{(backendInfo?.profiles || ["inspect","workspace","process","network"]).map(value=><option value={value} key={value}>{value}</option>)}</select></label>
+                    <label className="mcm-profile-select" title="Capability authority for this run"><span>scope</span><select value={profile} onChange={event=>{setProfile(event.target.value);localStorage.setItem("hyper_profile",event.target.value);}}>{(backendInfo?.profiles || ["inspect","workspace"]).map(value=><option value={value} key={value}>{backendInfo?.profile_details?.[value]?.label || value}</option>)}</select></label>
                     <button className="mcm-demo-button" onClick={()=>sendMessage({forceDemo:true})} title="Run paced workflow demo"><Sparkles size={13}/> Demo</button>
                     <button className="mcm-send" onClick={()=>sendMessage()} disabled={!input.trim()} aria-label="Send"><Send size={16}/></button>
                   </div>
@@ -503,25 +782,43 @@ async function readSse(response, onFrame) {
     buffer += decoder.decode(value,{stream:true}); let boundary;
     while((boundary=buffer.indexOf("\n\n"))>=0){
       const frame=buffer.slice(0,boundary); buffer=buffer.slice(boundary+2);
-      for(const line of frame.split("\n")) if(line.startsWith("data:")) onFrame(JSON.parse(line.slice(5)));
+      const source=frame.split("\n").filter(line=>line.startsWith("data:")).map(line=>line.slice(5).trimStart()).join("\n");
+      if(!source)continue;
+      try { onFrame(JSON.parse(source)); }
+      catch { throw new Error("Runtime stream emitted an invalid event frame."); }
     }
   }
 }
 
-function OperatorPanel({panel,onPanelChange,apiBase,profiles,providers,selectedProvider,selectedModel,modelOptions,allowedHosts,onClose}) {
+function FileExplorer({apiBase,sessionId,linkedFiles,onLink,onClose}) {
+  const [scope,setScope]=useState("workspace"),[path,setPath]=useState("workspace/"),[items,setItems]=useState([]),[preview,setPreview]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState("");
+  const base=apiBase.replace(/\/$/,"");
+  const linked=file=>linkedFiles.some(item=>(item.id||item.path)===(file.id||file.path));
+  async function load(nextScope=scope,nextPath=path){setLoading(true);setError("");setPreview(null);try{const endpoint=nextScope==="workspace"?`${base}/api/filesystem?path=${encodeURIComponent(nextPath)}`:`${base}/api/sessions/${encodeURIComponent(sessionId)}/files`;const response=await fetch(endpoint);const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`files returned ${response.status}`);setItems(nextScope==="workspace"?(data.entries||[]):(data.files||[]).map(file=>({...file,kind:"file",scope:"session"})));if(nextScope==="workspace")setPath(data.path||nextPath);}catch(reason){setItems([]);setError(reason.message||"Could not load files");}finally{setLoading(false);}}
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- load uses this exact scope/path snapshot.
+  useEffect(()=>{void load(scope,path);},[scope,path,sessionId,base]);
+  async function inspect(file){if(file.kind==="directory"){setPath(file.path);return;}if(file.kind!=="file")return;setLoading(true);setError("");try{const endpoint=scope==="workspace"?`${base}/api/filesystem/preview?path=${encodeURIComponent(file.path)}`:`${base}/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(file.id)}/preview`;const response=await fetch(endpoint);const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`preview returned ${response.status}`);setPreview({...data,scope,path:file.path||data.path,id:file.id||data.id});}catch(reason){setError(reason.message||"Preview failed");}finally{setLoading(false);}}
+  const up=path==="workspace/"?null:path.split("/").slice(0,-1).join("/")||"workspace/",contentUrl=preview?.contentUrl?`${base}${preview.contentUrl}`:"";
+  return <div className="mcm-operator-overlay" role="dialog" aria-modal="true" aria-label="File explorer"><section className="mcm-file-explorer"><header><div><small>Runtime context</small><strong>Files</strong></div><nav><button className={scope==="workspace"?"active":""} onClick={()=>setScope("workspace")}>Universal workspace</button><button className={scope==="session"?"active":""} onClick={()=>setScope("session")} disabled={!sessionId}>This session</button></nav><button onClick={onClose}><X size={15}/></button></header><div className="mcm-file-path"><button disabled={!up||scope!=="workspace"} onClick={()=>up&&load("workspace",up)}><ArrowLeft size={12}/></button><span>{scope==="workspace"?path:`session://${sessionId||"not-connected"}`}</span><small>{items.length} items</small></div>{error&&<p className="mcm-panel-error">{error}</p>}<main><div className="mcm-file-list">{loading&&!items.length?<EmptyState icon={Loader2} text="Reading bounded file metadata…"/>:items.length?items.map(file=><button key={file.id||file.path} className={(preview?.id||preview?.path)===(file.id||file.path)?"active":""} disabled={file.kind==="symlink"} onClick={()=>void inspect(file)}>{file.kind==="directory"?<Folder size={15}/>:<FileText size={15}/>}<span><strong>{file.name}</strong><small>{file.kind==="directory"?"directory":`${file.previewKind||file.mediaType||"file"} · ${formatBytes(file.sizeBytes)}`}</small></span><ChevronRight size={13}/></button>):<EmptyState icon={FolderOpen} text={`No ${scope} files available.`}/>}</div><div className="mcm-file-preview">{preview?<><header><span><small>{preview.previewKind}</small><strong>{preview.name}</strong><em>{formatBytes(preview.sizeBytes)}{preview.truncated?" · bounded preview":""}</em></span><button disabled={linked(preview)} onClick={()=>onLink({scope:preview.scope,id:preview.id,path:preview.path,name:preview.name,previewKind:preview.previewKind})}><Link2 size={12}/>{linked(preview)?"Linked":"Link to chat"}</button></header><FilePreview preview={preview} contentUrl={contentUrl}/></>:<EmptyState icon={Eye} text="Choose a file for a typed preview and explicit chat link."/>}</div></main></section></div>;
+}
+
+function formatBytes(value){if(!Number.isFinite(value))return "—";if(value<1024)return `${value} B`;if(value<1024*1024)return `${(value/1024).toFixed(1)} KB`;return `${(value/1024/1024).toFixed(1)} MB`;}
+function FilePreview({preview,contentUrl}){if(["code","markdown","json","csv","text"].includes(preview.previewKind))return <pre className={`mcm-preview-text kind-${preview.previewKind}`}><code>{preview.content||"No text preview available."}</code></pre>;if(preview.previewKind==="image")return <div className="mcm-preview-media"><img src={contentUrl} alt={preview.name}/></div>;if(preview.previewKind==="audio")return <div className="mcm-preview-media"><audio controls src={contentUrl}/></div>;if(preview.previewKind==="video")return <div className="mcm-preview-media"><video controls src={contentUrl}/></div>;if(preview.previewKind==="pdf")return <iframe className="mcm-preview-pdf" src={contentUrl} title={preview.name}/>;return <EmptyState icon={FileText} text="Binary preview is unavailable. The file can still be linked as metadata."/>;}
+
+function OperatorPanel({panel,onPanelChange,apiBase,sessionId,sessionAgentEnabled,profiles,providers,selectedProvider,selectedModel,modelOptions,allowedHosts,onResume,onClose}) {
   const [data,setData]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState(""),[selected,setSelected]=useState(null);
   const [scheduleProvider,setScheduleProvider]=useState(selectedProvider),[scheduleModel,setScheduleModel]=useState(selectedModel),[scheduleModels,setScheduleModels]=useState(modelOptions);
-  const endpoint={runs:"/api/runs",memory:"/api/memory",tools:"/api/custom_tools",schedules:"/api/schedules",scorecard:"/api/scorecard",signals:"/api/signals",corrections:"/api/corrections"}[panel];
+  const endpoint={runs:"/api/runs",memory:`/api/memory?session_id=${encodeURIComponent(sessionId||"session:none")}`,tools:"/api/custom_tools",schedules:"/api/schedules",scorecard:"/api/scorecard",signals:"/api/signals",corrections:"/api/corrections"}[panel];
   const endpointUrl=path=>`${apiBase.replace(/\/$/,"")}${path}`;
   async function refresh(){setLoading(true);setError("");try{const response=await fetch(endpointUrl(endpoint));if(!response.ok)throw new Error(`runtime returned ${response.status}`);setData(await response.json());}catch(reason){setError(reason.message||"Could not load this view");}finally{setLoading(false);}}
   useEffect(()=>{let active=true;setLoading(true);setError("");fetch(`${apiBase.replace(/\/$/,"")}${endpoint}`).then(async response=>{if(!response.ok)throw new Error(`runtime returned ${response.status}`);const value=await response.json();if(active)setData(value);}).catch(reason=>{if(active)setError(reason.message||"Could not load this view");}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[apiBase,endpoint]);
   useEffect(()=>{if(panel!=="schedules"||!scheduleProvider)return;let active=true;fetch(`${apiBase.replace(/\/$/,"")}/api/models/${encodeURIComponent(scheduleProvider)}`).then(async response=>{const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(value.error||`model discovery returned ${response.status}`);if(!active)return;const models=(value.models||[]).filter(item=>item?.id);setScheduleModels(models);setScheduleModel(current=>models.some(item=>item.id===current)?current:value.default_model||models[0]?.id||current);}).catch(reason=>{if(active)setError(reason.message||"Could not discover schedule models");});return()=>{active=false;};},[apiBase,panel,scheduleProvider]);
   async function mutate(path,options={}){const response=await fetch(endpointUrl(path),options);if(!response.ok){const value=await response.json().catch(()=>({}));throw new Error(value.error||`runtime returned ${response.status}`);}if(response.headers.get("content-type")?.includes("text/event-stream"))await response.text();await refresh();}
   async function addTool(event){event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));try{await mutate("/api/custom_tools",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:values.name,description:values.description,host:values.host,path_prefix:values.pathPrefix})});event.currentTarget.reset();}catch(reason){setError(reason.message);}}
-  async function addSchedule(event){event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));try{await mutate("/api/schedules",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:values.prompt,profile:values.profile,provider:scheduleProvider,model:scheduleModel,interval_minutes:Number(values.intervalMinutes)})});event.currentTarget.reset();}catch(reason){setError(reason.message);}}
+  async function addSchedule(event){event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));try{await mutate("/api/schedules",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:values.prompt,profile:values.profile,provider:scheduleProvider,model:scheduleModel,interval_minutes:Number(values.intervalMinutes),...(sessionAgentEnabled&&sessionId?{session_id:sessionId}:{})})});event.currentTarget.reset();}catch(reason){setError(reason.message);}}
   async function addCorrection(event){event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));try{await mutate("/api/corrections",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({observed:values.observed,mismatch:values.mismatch,correction:values.correction,reusable_rule:values.reusableRule,trigger_codes:String(values.triggerCodes||"").split(",").map(value=>value.trim()).filter(Boolean)})});event.currentTarget.reset();}catch(reason){setError(reason.message);}}
   const items=panel==="runs"?data?.runs:panel==="memory"?data?.memory:panel==="tools"?data?.custom_tools:panel==="schedules"?data?.schedules:panel==="signals"?data?.runs:panel==="corrections"?data?.corrections:null;
-  return <div className="mcm-operator-overlay" role="dialog" aria-modal="true" aria-label={`${panel} view`}><section className="mcm-operator-panel"><header><div><small>Operator library</small><strong>{panel}</strong></div><nav>{["runs","memory","tools","schedules","signals","corrections"].map(value=><button key={value} className={value===panel?"active":""} onClick={()=>onPanelChange(value)}>{value}</button>)}</nav><button onClick={onClose}><X size={15}/></button></header>{error&&<p className="mcm-panel-error">{error}</p>}{panel==="tools"&&<form className="mcm-inline-form" onSubmit={addTool}><input name="name" placeholder="tool_name" required/><input name="description" placeholder="What this GET tool returns" required/><input name="host" list="mcm-hosts" placeholder="allowlisted host" required/><datalist id="mcm-hosts">{allowedHosts.map(value=><option key={value} value={String(value).replace(/^https?:\/\//,"").split("/")[0]}/>)}</datalist><input name="pathPrefix" placeholder="/api/" defaultValue="/"/><button>Add bounded tool</button></form>}{panel==="schedules"&&<form className="mcm-inline-form schedule" onSubmit={addSchedule}><input name="prompt" placeholder="Task to run" required/><select name="profile">{profiles.map(value=><option key={value}>{value}</option>)}</select><select aria-label="Schedule provider" value={scheduleProvider} onChange={event=>{setScheduleProvider(event.target.value);setScheduleModel("");setScheduleModels([]);}}>{providers.filter(item=>item.configured).map(item=><option key={item.id} value={item.id}>{item.label||item.id}</option>)}</select><select aria-label="Schedule model" value={scheduleModel} onChange={event=>setScheduleModel(event.target.value)}><option value="">Select model</option>{scheduleModels.map(item=><option key={item.id} value={item.id}>{item.name||item.id}</option>)}</select><input name="intervalMinutes" type="number" min="1" defaultValue="60"/><button disabled={!scheduleProvider||!scheduleModel}>Add schedule</button></form>}{panel==="corrections"&&<form className="mcm-inline-form correction" onSubmit={addCorrection}><input name="observed" placeholder="Observed result" required/><input name="mismatch" placeholder="Mismatch with intent" required/><input name="correction" placeholder="Correction that worked" required/><input name="reusableRule" placeholder="Candidate reusable rule" required/><input name="triggerCodes" placeholder="Trigger codes, comma separated"/><button>Queue candidate</button></form>}<main>{loading?<EmptyState icon={Loader2} text="Loading runtime projection…"/>:panel==="scorecard"?<div className="mcm-score-grid">{Object.entries(data||{}).map(([key,value])=><Insight key={key} value={typeof value==="number"&&value>0&&value<1?`${Math.round(value*100)}%`:String(value)} label={key.replaceAll("_"," ")}/>)}</div>:<>{panel==="signals"&&<div className="mcm-score-grid compact">{Object.entries(data?.aggregate||{}).map(([key,value])=><Insight key={key} value={String(value)} label={key.replaceAll("_"," ")}/>)}</div>}<div className="mcm-record-layout"><div className="mcm-record-list">{items?.length?items.map(item=><button key={item.id} className={selected?.id===item.id?"active":""} onClick={()=>setSelected(item)}><span><strong>{item.title||item.name||item.prompt||item.content?.slice(0,70)||item.mismatch||item.id}</strong><small>{item.status||item.lastStatus||item.profile||item.host||"verified record"}</small></span><ChevronRight size={13}/></button>):<EmptyState icon={Database} text={`No ${panel} records yet.`}/>}</div><div className="mcm-record-detail">{selected?<><NaturalObject value={selected}/><div className="mcm-record-actions">{panel==="memory"&&<button onClick={()=>void mutate(`/api/memory/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete memory</button>}{panel==="tools"&&<><button onClick={()=>void mutate(`/api/custom_tools/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!selected.enabled})})}>{selected.enabled?"Disable":"Enable"}</button><button onClick={()=>void mutate(`/api/custom_tools/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete</button></>}{panel==="schedules"&&<><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}/run`,{method:"POST"})}>Run now</button><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!selected.enabled})})}>{selected.enabled?"Pause":"Enable"}</button><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete</button></>}{panel==="corrections"&&selected.status==="candidate"&&<><button onClick={()=>void mutate(`/api/corrections/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({status:"accepted_for_experiment"})})}>Accept for experiment</button><button onClick={()=>void mutate(`/api/corrections/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({status:"rejected"})})}>Reject</button></>}</div></>:<EmptyState icon={Search} text="Select a record to inspect its provenance and state."/>}</div></div></>}</main></section></div>;
+  return <div className="mcm-operator-overlay" role="dialog" aria-modal="true" aria-label={`${panel} view`}><section className="mcm-operator-panel"><header><div><small>Operator library</small><strong>{panel}</strong></div><nav>{["runs","memory","tools","schedules","signals","corrections"].map(value=><button key={value} className={value===panel?"active":""} onClick={()=>onPanelChange(value)}>{value}</button>)}</nav><button onClick={onClose}><X size={15}/></button></header>{error&&<p className="mcm-panel-error">{error}</p>}{panel==="tools"&&<form className="mcm-inline-form" onSubmit={addTool}><input name="name" placeholder="tool_name" required/><input name="description" placeholder="What this GET tool returns" required/><input name="host" list="mcm-hosts" placeholder="allowlisted host" required/><datalist id="mcm-hosts">{allowedHosts.map(value=><option key={value} value={String(value).replace(/^https?:\/\//,"").split("/")[0]}/>)}</datalist><input name="pathPrefix" placeholder="/api/" defaultValue="/"/><button>Add bounded tool</button></form>}{panel==="schedules"&&<form className="mcm-inline-form schedule" onSubmit={addSchedule}><input name="prompt" placeholder="Task to run" required/><select name="profile">{profiles.map(value=><option key={value}>{value}</option>)}</select><select aria-label="Schedule provider" value={scheduleProvider} onChange={event=>{setScheduleProvider(event.target.value);setScheduleModel("");setScheduleModels([]);}}>{providers.filter(item=>item.configured).map(item=><option key={item.id} value={item.id}>{item.label||item.id}</option>)}</select><select aria-label="Schedule model" value={scheduleModel} onChange={event=>setScheduleModel(event.target.value)}><option value="">Select model</option>{scheduleModels.map(item=><option key={item.id} value={item.id}>{item.name||item.id}</option>)}</select><input name="intervalMinutes" type="number" min="1" defaultValue="60"/><button disabled={!scheduleProvider||!scheduleModel} title={sessionAgentEnabled?"Runs inside this session agent with its isolated history and memory":"Enable this chat as a reusable agent in Settings to link its schedules"}>{sessionAgentEnabled?"Schedule agent":"Add schedule"}</button></form>}{panel==="corrections"&&<form className="mcm-inline-form correction" onSubmit={addCorrection}><input name="observed" placeholder="Observed result" required/><input name="mismatch" placeholder="Mismatch with intent" required/><input name="correction" placeholder="Correction that worked" required/><input name="reusableRule" placeholder="Candidate reusable rule" required/><input name="triggerCodes" placeholder="Trigger codes, comma separated"/><button>Queue candidate</button></form>}<main>{loading?<EmptyState icon={Loader2} text="Loading runtime projection…"/>:panel==="scorecard"?<div className="mcm-score-grid">{Object.entries(data||{}).map(([key,value])=><Insight key={key} value={typeof value==="number"&&value>0&&value<1?`${Math.round(value*100)}%`:String(value)} label={key.replaceAll("_"," ")}/>)}</div>:<>{panel==="signals"&&<div className="mcm-score-grid compact">{Object.entries(data?.aggregate||{}).map(([key,value])=><Insight key={key} value={String(value)} label={key.replaceAll("_"," ")}/>)}</div>}<div className="mcm-record-layout"><div className="mcm-record-list">{items?.length?items.map(item=><button key={item.id} className={selected?.id===item.id?"active":""} onClick={()=>setSelected(item)}><span><strong>{item.title||item.name||item.prompt||item.content?.slice(0,70)||item.mismatch||item.id}</strong><small>{item.status||item.lastStatus||item.profile||item.host||"verified record"}</small></span><ChevronRight size={13}/></button>):<EmptyState icon={Database} text={`No ${panel} records yet.`}/>}</div><div className="mcm-record-detail">{selected?<><NaturalObject value={selected}/><div className="mcm-record-actions">{panel==="runs"&&selected.status==="interrupted"&&<button onClick={()=>onResume(selected)}>Resume from checkpoint</button>}{panel==="memory"&&<button onClick={()=>void mutate(`/api/memory/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete memory</button>}{panel==="tools"&&<><button onClick={()=>void mutate(`/api/custom_tools/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!selected.enabled})})}>{selected.enabled?"Disable":"Enable"}</button><button onClick={()=>void mutate(`/api/custom_tools/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete</button></>}{panel==="schedules"&&<><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}/run`,{method:"POST"})}>Run now</button><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!selected.enabled})})}>{selected.enabled?"Pause":"Enable"}</button><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete</button></>}{panel==="corrections"&&selected.status==="candidate"&&<><button onClick={()=>void mutate(`/api/corrections/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({status:"accepted_for_experiment"})})}>Accept for experiment</button><button onClick={()=>void mutate(`/api/corrections/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({status:"rejected"})})}>Reject</button></>}</div></>:<EmptyState icon={Search} text="Select a record to inspect its provenance and state."/>}</div></div></>}</main></section></div>;
 }
 
 function AgentCapsule({ view, elapsed, phaseIndex, events, tools, onOpen, onStop }) {
@@ -536,22 +833,47 @@ function AgentCapsule({ view, elapsed, phaseIndex, events, tools, onOpen, onStop
   </div>;
 }
 
-function ChatTimeline({ messages, runs, working, onInspect, endRef }) {
+function ChatTimeline({ messages, runs, working, onInspect, timelineRef, onTimelineScroll }) {
   const ungrouped=messages.filter(message=>!message.runId);
-  return <div className="mcm-chat-timeline">
+  return <div className="mcm-chat-timeline" ref={timelineRef} onScroll={onTimelineScroll}>
     {ungrouped.map(message=><div key={message.id} className={`mcm-bubble ${message.role}`}>{message.content}</div>)}
     {runs.map((item,index)=>{
-      const runMessages=messages.filter(message=>message.runId===item.id), visibleEvents=item.events.filter(event=>!["model.delta","respond.final"].includes(event.type));
-      return <React.Fragment key={item.id}>{runMessages.filter(message=>message.role==="user").map(message=><div key={message.id} className="mcm-bubble user">{message.content}</div>)}{visibleEvents.length>0&&<div className="mcm-workflow-stack"><div className="mcm-workflow-label"><span>agent workflow · {item.source}</span><span>{visibleEvents.length} events</span></div>{visibleEvents.map(event=><WorkflowRow key={event.uiId} event={event} active={working&&index===runs.length-1&&event===visibleEvents.at(-1)} onClick={()=>onInspect(event,item)}/>)}</div>}{runMessages.filter(message=>message.role==="assistant").map(message=><div key={message.id} className="mcm-bubble assistant">{message.content}</div>)}</React.Fragment>;
+      const runMessages=messages.filter(message=>message.runId===item.id), visibleEvents=item.events.filter(event=>!["model.delta","respond.final"].includes(event.type)).map(normalizeUiEvent);
+      const active=working&&index===runs.length-1;
+      return <React.Fragment key={item.id}>{runMessages.filter(message=>message.role==="user").map(message=><div key={message.id} className="mcm-bubble user">{message.content}</div>)}{visibleEvents.length>0&&<RunWorkflowCard run={item} events={visibleEvents} active={active} onInspect={event=>onInspect(event,item)}/>} {runMessages.filter(message=>message.role==="assistant").map(message=><div key={message.id} className="mcm-bubble assistant">{message.content}</div>)}</React.Fragment>;
     })}
-    <div ref={endRef}/>
   </div>;
+}
+
+function RunWorkflowCard({run,events,active,onInspect}) {
+  const [expanded,setExpanded]=useState(active);
+  useEffect(()=>{if(active)setExpanded(true);},[active]);
+  const failures=events.filter(event=>["error","blocked"].includes(event.state)).length;
+  const verified=events.filter(event=>(event.lens==="verification"||event.type==="verify.verdict")&&event.state==="success").length;
+  const evidence=new Set(events.flatMap(event=>event.correlation?.evidence_refs||[])).size;
+  const canonical=events.some(event=>event.canonical_event_id);
+  const highlighted=events.filter(event=>["error","blocked"].includes(event.state));
+  const compact=[events[0],...highlighted.slice(-1),...events.slice(-3)].filter(Boolean);
+  const visible=expanded?events:[...new Map(compact.map(event=>[event.uiId,event])).values()];
+  const completed=run.status==="complete"||run.status==="completed";
+  const status=active?"running":completed?"verified":failures?"attention":run.status||"finished";
+  return <section className={`mcm-workflow-stack ${active?"active":""}`}>
+    <button className="mcm-workflow-summary" onClick={()=>setExpanded(value=>!value)} aria-expanded={expanded}>
+      <span className={`mcm-run-signal ${status}`}><i/>{status}</span>
+      <span className="mcm-workflow-heading"><strong>{active?"Agent is working":"Agent workflow"}</strong><small>{run.source||"runtime"} · {events.length} {canonical?"canonical projections":"runtime events"}</small></span>
+      <span className="mcm-workflow-proof"><b>{verified}</b><small>verified</small></span>
+      <span className="mcm-workflow-proof"><b>{evidence}</b><small>evidence</small></span>
+      {expanded?<ChevronDown size={15}/>:<ChevronRight size={15}/>}</button>
+    {expanded&&run.trailIntegrity?.valid&&<div className="mcm-integrity-strip"><Check size={11}/> ledger integrity verified <span>· {shortHash(run.trailIntegrity.latest_hash)}</span></div>}
+    <div className="mcm-workflow-events">{visible.map(event=><WorkflowRow key={event.uiId} event={event} active={active&&event===events.at(-1)} onClick={()=>onInspect(event)}/>)}</div>
+    {!expanded&&events.length>visible.length&&<button className="mcm-show-trace" onClick={()=>setExpanded(true)}>Show {events.length-visible.length} more events</button>}
+  </section>;
 }
 
 function WorkflowRow({event,active,onClick}) {
   const view=viewOf(event), Icon=view.Icon;
-  return <button className={`mcm-workflow-row ${active ? "active":""}`} onClick={onClick} style={{"--event-color":PHASE_COLOR[view.phase]}}>
-    <span className="mcm-event-glyph"><Icon size={12}/></span><span className="mcm-event-copy"><strong>{view.title}</strong><small>{view.detail}</small></span><span className="mcm-event-time">{stampFrom(event.at)}</span><ChevronRight size={13}/>
+  return <button className={`mcm-workflow-row ${active ? "active":""} state-${event.state||"info"}`} onClick={onClick} style={{"--event-color":PHASE_COLOR[view.phase]}}>
+    <span className="mcm-event-glyph"><Icon size={12}/></span><span className="mcm-event-copy"><strong>{view.title}</strong><small>{view.detail}</small></span><span className="mcm-event-time">{event.timing_source==="replay_projection"?`#${event.canonical_sequence}`:stampFrom(event.at)}</span><ChevronRight size={13}/>
   </button>;
 }
 
@@ -585,14 +907,26 @@ function DataPanel({events,selectedEvent,selectEvent}) {
 }
 
 function ActionPanel({view,events,run,elapsed}) {
-  const Icon=view.Icon, calls=events.filter(e=>e.type==="tool.call").length, completed=events.filter(e=>e.type==="tool.result").length;
+  const Icon=view.Icon, verified=events.filter(e=>(e.lens==="verification"||e.type==="verify.verdict")&&e.state==="success").length;
+  const evidence=new Set(events.flatMap(event=>event.correlation?.evidence_refs||[])).size;
+  const issues=events.filter(event=>["error","blocked"].includes(event.state)).length;
   const plan=[...events].reverse().find(e=>e.payload?.steps)?.payload?.steps || [];
-  return <div className="mcm-action-panel"><div className="mcm-action-hero"><span className="mcm-action-orb"><BlobAvatar state={run?.status==="running"?"running":"idle"} size={56}/></span><div><small>{PHASE_LABEL[view.phase]||view.phase} · {run?.status}</small><h2><Icon size={19}/>{view.title}</h2><p>{view.detail}</p></div></div><div className="mcm-insight-grid"><Insight value={`${elapsed.toFixed(1)}s`} label="elapsed"/><Insight value={events.length} label="events"/><Insight value={`${completed}/${calls}`} label="tools returned"/><Insight value={run?.source||"runtime"} label="execution source"/></div>{plan.length>0&&<PlanView steps={plan}/>}<div className="mcm-action-feed">{events.slice(-5).reverse().map(event=><WorkflowRow key={event.uiId} event={event}/>)}</div></div>;
+  return <div className="mcm-action-panel"><div className="mcm-action-hero"><span className="mcm-action-orb"><BlobAvatar state={run?.status==="running"?"running":"idle"} size={56}/></span><div><small>{PHASE_LABEL[view.phase]||view.phase} · {run?.status}</small><h2><Icon size={19}/>{view.title}</h2><p>{view.detail}</p></div></div><div className="mcm-insight-grid"><Insight value={`${elapsed.toFixed(1)}s`} label="elapsed"/><Insight value={verified} label="verified transitions"/><Insight value={evidence} label="evidence refs"/><Insight value={issues} label="needs attention"/></div>{run?.streamContract&&<div className="mcm-contract-note"><Check size={12}/><span>Runtime stream {run.streamContract.version} · event schema {run.streamContract.eventSchema}</span></div>}{plan.length>0&&<PlanView steps={plan}/>}<div className="mcm-action-feed">{events.slice(-5).reverse().map(event=><WorkflowRow key={event.uiId} event={event}/>)}</div></div>;
 }
 
 function EventDetail({event}) {
-  const view=viewOf(event), Icon=view.Icon;
-  return <article className="mcm-event-detail"><header style={{"--event-color":PHASE_COLOR[view.phase]}}><span><Icon size={17}/></span><div><small>{event.type}</small><h3>{view.title}</h3><p>{view.detail}</p></div></header><PayloadAdapter payload={event.payload||{}} event={event}/></article>;
+  const view=viewOf(event), Icon=view.Icon, lens=eventLens(event);
+  return <article className="mcm-event-detail"><header style={{"--event-color":PHASE_COLOR[view.phase]}}><span><Icon size={17}/></span><div><small>{event.type} · {lens}</small><h3>{view.title}</h3><p>{view.detail}</p></div></header>{event.canonical_event_id&&<div className="mcm-provenance-strip"><span>canonical #{event.canonical_sequence}</span><span>{event.canonical_type}</span><span className={`state-${event.state||"info"}`}>{event.state||"recorded"}</span><code>{shortHash(event.canonical_event_id)}</code></div>}<PayloadAdapter payload={event.payload||{}} event={event}/></article>;
+}
+
+function eventLens(event={}) {
+  if(event.lens)return event.lens;
+  if(event.type?.startsWith("model.")) return "proposal";
+  if(event.type?.startsWith("policy.")||event.type?.startsWith("gate.")||event.type?.startsWith("capability.grant")||event.type?.startsWith("workflow.node")) return "runtime decision";
+  if(event.type?.startsWith("tool.")) return "bounded effect";
+  if(event.type?.startsWith("state.")||event.type?.startsWith("verify.")||event.type?.startsWith("action.verified")||event.type?.startsWith("effect.")) return "observed reality";
+  if(event.payload?.fault||event.payload?.injected) return "injected condition";
+  return "canonical event";
 }
 
 function PayloadAdapter({payload,event}) {
@@ -603,19 +937,19 @@ function PayloadAdapter({payload,event}) {
 function adaptPayload(payload,event) {
   if(Array.isArray(payload.steps)) return <PlanView steps={payload.steps}/>;
   if(Array.isArray(payload.results)||payload.result_count!=null) return <SearchResultsView payload={payload}/>;
-  if(payload.checks||payload.verdict) return <VerificationView payload={payload}/>;
+  if(event.lens==="verification"||payload.checks||payload.verdict||payload.passed!=null) return <VerificationView payload={payload}/>;
   if(payload.arguments||event.type==="tool.call") return <ToolRequestView payload={payload}/>;
   if(Array.isArray(payload.patterns)) return <PatternView payload={payload}/>;
-  if(payload.sources||payload.items_included!=null) return <ContextView payload={payload}/>;
+  if(event.lens==="context"||payload.sources||payload.items_included!=null||payload.includedSourceIds) return <ContextView payload={payload}/>;
   return <NaturalObject value={payload}/>;
 }
 
 function PlanView({steps=[]}) { return <div className="mcm-plan-view"><h4><ListChecks size={14}/>Execution plan</h4>{steps.map((step,index)=><div key={step.id||index} className={`mcm-plan-step ${step.status||"pending"}`}><span>{step.status==="done"?<Check size={12}/>:index+1}</span><p>{step.text||step.title||String(step)}</p><small>{step.status||"pending"}</small></div>)}</div>; }
 function SearchResultsView({payload}) { const results=payload.results||[]; return <div><div className="mcm-adapter-summary"><Insight value={payload.result_count??results.length} label="sources found"/><Insight value={payload.duration_ms?`${payload.duration_ms}ms`:"—"} label="retrieval time"/><Insight value={payload.domains?.length||new Set(results.map(r=>r.domain)).size} label="domains"/></div><div className="mcm-source-list">{results.map((result,index)=><div key={index}><span>{index+1}</span><div><strong>{result.title||result.name||"Source"}</strong><small>{result.domain||result.url}</small></div>{result.relevance!=null&&<b>{Math.round(result.relevance*100)}%</b>}</div>)}</div>{payload.insight&&<blockquote>{payload.insight}</blockquote>}</div>; }
-function VerificationView({payload}) { return <div><div className={`mcm-verdict ${payload.verdict||"accept"}`}><Check size={16}/><div><strong>{payload.verdict||"verified"}</strong><small>{payload.confidence!=null?`${Math.round(payload.confidence*100)}% confidence`:"deterministic checks complete"}</small></div></div><div className="mcm-check-grid">{Object.entries(payload.checks||{}).map(([key,value])=><div key={key} className={value?"pass":"fail"}>{value?<Check size={12}/>:<X size={12}/>}<span>{key.replaceAll("_"," ")}</span></div>)}</div></div>; }
+function VerificationView({payload}) { const passed=payload.passed??payload.verdict!=="reject"; const reasons=payload.reasonCodes||[]; return <div><div className={`mcm-verdict ${passed?"accept":"reject"}`}>{passed?<Check size={16}/>:<X size={16}/>}<div><strong>{payload.verdict||(passed?"verified":"not verified")}</strong><small>{payload.confidence!=null?`${Math.round(payload.confidence*100)}% confidence`:reasons.length?reasons.map(value=>String(value).replaceAll("_"," ").toLowerCase()).join(" · "):"deterministic checks complete"}</small></div></div><div className="mcm-check-grid">{Object.entries(payload.checks||{}).map(([key,value])=><div key={key} className={value?"pass":"fail"}>{value?<Check size={12}/>:<X size={12}/>}<span>{key.replaceAll("_"," ")}</span></div>)}</div>{payload.evidence?.length>0&&<div className="mcm-evidence-list">{payload.evidence.map((item,index)=><span key={item.id||index}>{item.id||String(item)}</span>)}</div>}</div>; }
 function ToolRequestView({payload}) { return <div><div className="mcm-tool-signature"><TerminalSquare size={16}/><div><small>tool request</small><strong>{payload.name||payload.tool||"tool"}</strong></div></div><NaturalObject value={payload.arguments||payload}/></div>; }
 function PatternView({payload}) { return <div className="mcm-patterns">{payload.patterns.map((pattern,index)=>{const item=typeof pattern==="string"?{name:pattern}:pattern;return <div key={index}><span>{item.name}</span>{item.score!=null&&<i><b style={{width:`${item.score*100}%`}}/></i>}<strong>{item.score!=null?`${Math.round(item.score*100)}%`:""}</strong></div>})}{payload.insight&&<blockquote>{payload.insight}</blockquote>}</div>; }
-function ContextView({payload}) { const sources=payload.sources||{}; return <div><div className="mcm-adapter-summary"><Insight value={`${payload.items_included??"?"}/${payload.items_total??"?"}`} label="context items"/><Insight value={payload.chars?`${(payload.chars/1000).toFixed(1)}k`:"—"} label="characters"/><Insight value={payload.dropped?.length||0} label="items dropped"/></div><div className="mcm-context-bars">{Object.entries(sources).map(([name,value])=><div key={name}><span>{name}</span><i><b style={{width:`${Math.min(100,Number(value)*22)}%`}}/></i><strong>{String(value)}</strong></div>)}</div></div>; }
+function ContextView({payload}) { const sources=payload.sources||{}, included=payload.items_included??payload.includedSourceIds?.length??payload.items?.length??"?", total=payload.items_total??payload.audit?.sourcesConsidered??"?"; return <div><div className="mcm-adapter-summary"><Insight value={`${included}/${total}`} label="context items"/><Insight value={payload.audit?.contradictionCount??payload.contradictions??0} label="open conflicts"/><Insight value={payload.estimatedTokens??payload.chars??"—"} label={payload.estimatedTokens!=null?"estimated tokens":"characters"}/><Insight value={payload.dropped?.length||payload.excludedSourceIds?.length||0} label="items dropped"/></div><div className="mcm-context-bars">{Object.entries(sources).map(([name,value])=><div key={name}><span>{name}</span><i><b style={{width:`${Math.min(100,Number(value)*22)}%`}}/></i><strong>{String(value)}</strong></div>)}</div>{payload.includedSourceIds?.length>0&&<div className="mcm-evidence-list">{payload.includedSourceIds.map(value=><span key={value}>{value}</span>)}</div>}{payload.audit?.unresolvedConflictIds?.length>0&&<blockquote>Unresolved: {payload.audit.unresolvedConflictIds.join(" · ")}</blockquote>}</div>; }
 
 function NaturalObject({value,depth=0}) {
   if(value==null) return <span className="mcm-scalar null">null</span>;
@@ -626,3 +960,4 @@ function NaturalObject({value,depth=0}) {
 function Insight({value,label}) { return <div className="mcm-insight"><strong>{value}</strong><span>{label}</span></div>; }
 function EmptyState({icon:Icon,text}) { return <div className="mcm-empty"><Icon size={22}/><p>{text}</p></div>; }
 function stampFrom(value) { if(!value)return ""; return new Date(value).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"}); }
+function shortHash(value) { const text=String(value||""); return text.length>16?`${text.slice(0,8)}…${text.slice(-6)}`:text; }

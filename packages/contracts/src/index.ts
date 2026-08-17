@@ -77,6 +77,8 @@ export interface CapabilityManifest {
   version: string;
   description?: string;
   effects: Effect[];
+  /** Effects every invocation necessarily performs and therefore must declare. */
+  requiredEffects?: Effect[];
   targetPatterns: string[];
   riskCeiling: RiskLevel;
   approval: 'never' | 'risk_based' | 'always';
@@ -112,6 +114,40 @@ export interface CapabilityExecution {
   summary: string;
   evidence: EvidenceRef[];
   errorCode?: string;
+  effectState?: EffectState;
+  effectId?: string;
+  retrySafe?: boolean;
+  reconciliationRequired?: boolean;
+}
+
+export type EffectState =
+  | 'not_started'
+  | 'applied'
+  | 'not_applied'
+  | 'unknown'
+  | 'partially_applied'
+  | 'reconciled';
+
+export interface EffectReconciliation {
+  effectId: string;
+  state: Extract<EffectState, 'applied' | 'not_applied' | 'unknown' | 'partially_applied' | 'reconciled'>;
+  retrySafe: boolean;
+  summary: string;
+  evidence: EvidenceRef[];
+}
+
+/** Durable, argument-free description of an effect that may have crossed the
+ * execution boundary before its outcome was committed. Capability adapters
+ * may use it to inspect the environment after a process restart. */
+export interface InterruptedEffect {
+  runId: string;
+  proposalId: string;
+  capabilityId: string;
+  target: string;
+  idempotencyKey: string;
+  declaredEffects: Effect[];
+  idempotent: boolean;
+  preparedEventHash: string;
 }
 
 export interface Observation {
@@ -125,6 +161,11 @@ export interface VerificationResult {
   passed: boolean;
   reasonCodes: string[];
   evidence: EvidenceRef[];
+  /** Narrow claims this verifier has actually established. */
+  establishes?: string[];
+  /** Material facts this verifier does not establish. */
+  limitations?: string[];
+  verifierIds?: string[];
 }
 
 export interface LedgerEvent {
@@ -158,6 +199,11 @@ export interface CapabilityAdapter<Args extends Record<string, unknown> = Record
     execution: CapabilityExecution,
     observation: Observation,
   ): Promise<VerificationResult>;
+  reconcile?(
+    proposal: ActionProposal<Args>,
+    execution: CapabilityExecution,
+  ): Promise<EffectReconciliation>;
+  recoverInterrupted?(effect: InterruptedEffect): Promise<EffectReconciliation>;
 }
 
 export type WorkflowPhase =
@@ -203,6 +249,19 @@ export type ContextRecordStatus =
   | 'expired'
   | 'disputed';
 
+export type ContextRelationKind =
+  | 'supports'
+  | 'contradicts'
+  | 'depends_on'
+  | 'derived_from'
+  | 'supersedes';
+
+export interface ContextRelation {
+  kind: ContextRelationKind;
+  targetId: string;
+  evidenceRefs: string[];
+}
+
 export interface ContextRecord {
   id: string;
   tag: ContextTag;
@@ -215,6 +274,7 @@ export interface ContextRecord {
   priority: number;
   createdAt: string;
   searchTags: string[];
+  relations?: ContextRelation[];
   supersedes?: string;
   expiresAt?: string;
   rebuildable: boolean;
@@ -244,6 +304,7 @@ export interface ContextSource {
   confidence?: number;
   supersedes?: string;
   rebuildable?: boolean;
+  relations?: ContextRelation[];
 }
 
 export interface ContextPacketItem {
@@ -258,6 +319,7 @@ export interface ContextPacketItem {
   semanticTag?: ContextTag;
   confidence?: number;
   rebuildable?: boolean;
+  relations?: ContextRelation[];
   /** Other non-authoritative sources represented by this exact-content item. */
   collapsedSourceIds?: string[];
 }
@@ -286,6 +348,9 @@ export interface ContextPacketAudit {
   budgetUtilization: number;
   tokensByAuthority: Record<string, number>;
   tokensBySemanticTag: Record<string, number>;
+  contradictionCount?: number;
+  unresolvedConflictIds?: string[];
+  provenanceCoverage?: number;
 }
 
 export interface ContextPacket {
@@ -507,6 +572,74 @@ export interface ExecutableWorkflowPlan {
   updatedAt: string;
 }
 
+export type WorkflowNode =
+  | { id: string; kind: 'action'; proposal: ActionProposal }
+  | { id: string; kind: 'deterministic'; adapterId: string; input: Record<string, unknown>; outputFact: string; outputSchema: JsonSchema }
+  | { id: string; kind: 'model'; operation: string; input: Record<string, unknown>; outputFact: string; outputSchema: JsonSchema }
+  | { id: string; kind: 'sequence'; children: WorkflowNode[] }
+  | { id: string; kind: 'parallel'; children: WorkflowNode[]; maxConcurrency: number }
+  | { id: string; kind: 'choice'; predicate: WorkflowPredicate; whenTrue: WorkflowNode; whenFalse?: WorkflowNode }
+  | { id: string; kind: 'loop'; predicate: WorkflowPredicate; maxIterations: number; body: WorkflowNode }
+  | { id: string; kind: 'gate'; reason: string; child: WorkflowNode }
+  | { id: string; kind: 'verify'; verifierIds: string[]; claims: string[] }
+  | { id: string; kind: 'subworkflow'; intent: IntentContract; child: WorkflowNode };
+
+export interface WorkflowPredicate {
+  fact: string;
+  operator: 'exists' | 'equals' | 'not_equals';
+  value?: unknown;
+}
+
+export interface ComposedWorkflowPlan {
+  id: string;
+  version: '1.0';
+  intent: IntentContract;
+  root: WorkflowNode;
+}
+
+export interface WorkflowNodeResult {
+  nodeId: string;
+  status: 'completed' | 'skipped' | 'blocked' | 'failed';
+  reasonCodes: string[];
+  evidence: EvidenceRef[];
+  actionOutcome?: ActionOutcome;
+}
+
+export interface SemanticVerificationRequest {
+  runId: string;
+  claims: string[];
+  observations: Observation[];
+  evidence: EvidenceRef[];
+  now: string;
+}
+
+export interface WorkflowCandidate {
+  id: string;
+  status: 'candidate' | 'ready' | 'rejected';
+  sourceRunIds: string[];
+  plan: ExecutableWorkflowPlan;
+  parameterSlots: string[];
+  confidence: number;
+  verifiedSourceOutcomes: number;
+  createdAt: string;
+}
+
+export interface WorkflowBacktestReport {
+  candidateId: string;
+  scenarioCount: number;
+  passed: number;
+  failed: number;
+  mutationsSurvived: number;
+  acceptancePassed: boolean;
+}
+
+export interface HumanWorkflowActivation {
+  candidateId: string;
+  principalId: string;
+  approvedAt: string;
+  receiptId: string;
+}
+
 export interface WorkflowArtifact {
   id: string;
   planId: string;
@@ -557,6 +690,17 @@ export interface DelegationBudgetUsage {
 export interface DelegationVerificationSpec {
   minimumEvidence: number;
   requireVerifiedCompletion: boolean;
+  receiptAttestation?: {
+    required: boolean;
+    trustedKeyIds: string[];
+  };
+}
+
+export interface ReceiptAttestation {
+  algorithm: 'Ed25519';
+  keyId: string;
+  payloadDigest: string;
+  signature: string;
 }
 
 export interface DelegationContract {
@@ -597,6 +741,7 @@ export interface DelegationResult {
   verificationPassed: boolean;
   budgetUsage: DelegationBudgetUsage;
   childReceiptHash?: string;
+  attestation?: ReceiptAttestation;
   failure?: StructuredFailure;
 }
 

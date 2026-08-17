@@ -29,7 +29,7 @@ The public runtime is designed to prevent these mechanism-level failures:
 ## Explicitly out of scope in 0.2
 
 - defense against an attacker controlling the runtime process or ledger file;
-- hardened OS/container isolation for local processes;
+- hardened OS/container isolation when no sandbox backend is configured;
 - prevention of every DNS rebinding or network-stack attack;
 - adaptive prompt-injection robustness;
 - correctness of user-authored task contracts or completion oracles;
@@ -38,15 +38,22 @@ The public runtime is designed to prevent these mechanism-level failures:
 - provider availability and model reasoning quality; and
 - production security certification.
 
-The ledger also does not provide concurrent-writer serialization, crash/resume
-of an incomplete workflow, signed receipts, or protection from a process that
+The ledger also does not provide concurrent-writer serialization, distributed
+effect consensus, or protection from a process that
 can rewrite the complete file and recompute its hashes. Replay currently
-establishes schema, sequence, hash-chain integrity, per-run event summaries,
-and terminal receipts only.
+establishes schema, sequence, hash-chain integrity, per-run projections,
+interrupted-effect reconciliation, linked continuation, and terminal receipts.
 
-The bounded process adapter reduces accidental command scope. It is not a
-security sandbox: an allowlisted executable still inherits the operating
-system authority of the Hyper-Runtime process.
+The bounded process adapter alone is not a security sandbox: an allowlisted
+executable still inherits the runtime process authority. When Linux bubblewrap
+is configured, each invocation probes the backend and fails closed when it is
+unavailable; this is a concrete isolation mechanism, not a certification of the
+host or the runtime as a whole.
+
+The OCI backend is the stronger deployment option: it requires an immutable
+image digest and removes network, capabilities, writable root, and broad host
+mounts. These controls are tested at command construction and fail-closed probe
+boundaries; they are not an independent production certification.
 
 ## Deployment rule
 

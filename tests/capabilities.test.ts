@@ -4,16 +4,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   AllowlistedHttpCapability,
+  AuthenticatedGatewayIngress,
   BoundedProcessCapability,
+  BoundedChannelCapability,
+  ListDirectoryCapability,
   ReadFileCapability,
+  ReplayableClockCapability,
   RemoteCapabilityAdapter,
+  SessionKnowledgeSearchCapability,
+  StreamableHttpMcpClient,
+  discoverMcpCapabilities,
   WebSearchCapability,
   WriteFileCapability,
   type FileReadArgs,
   type FileWriteArgs,
   type HttpGetArgs,
+  type ListDirectoryArgs,
+  type ClockArgs,
+  type ChannelDeliveryArgs,
   type ProcessArgs,
   type WebSearchArgs,
+  type KnowledgeSearchArgs,
 } from '@hyper/capabilities';
 import {
   CONTRACT_VERSION,
@@ -85,6 +96,112 @@ function workflowFixture<Args extends Record<string, unknown>>(
 }
 
 describe('safe external capabilities', () => {
+  test('lists a bounded, sorted workspace directory and independently observes it', async () => {
+    const root = temporaryWorkspace();
+    mkdirSync(join(root, 'docs'));
+    writeFileSync(join(root, 'docs', 'b.txt'), 'b');
+    writeFileSync(join(root, 'docs', 'a.txt'), 'a');
+    writeFileSync(join(root, 'docs', '.secret'), 'hidden');
+    const capability = new ListDirectoryCapability(root);
+    const fixture = workflowFixture<ListDirectoryArgs>(capability, {
+      id: 'proposal:list-directory',
+      capabilityId: capability.manifest.id,
+      target: 'workspace/docs',
+      declaredEffects: ['state.read'],
+      risk: 1,
+      expectedEvidence: ['directory_entries'],
+      idempotencyKey: 'list-directory:one',
+      args: { maxEntries: 10 },
+    });
+
+    const outcome = await new AuthorizedRuntime().execute({ runId: 'run:list-directory', now, ...fixture, capability });
+
+    expect(outcome.status).toBe('completed');
+    expect(outcome.observation?.value).toEqual([
+      { name: 'a.txt', kind: 'file' },
+      { name: 'b.txt', kind: 'file' },
+    ]);
+  });
+
+  test('captures an injected clock snapshot that remains stable during observation and replay', async () => {
+    const capability = new ReplayableClockCapability(() => new Date(now));
+    const fixture = workflowFixture<ClockArgs>(capability, {
+      id: 'proposal:clock',
+      capabilityId: capability.manifest.id,
+      target: 'clock://now',
+      declaredEffects: ['state.read'],
+      risk: 1,
+      expectedEvidence: ['clock_snapshot'],
+      idempotencyKey: 'clock:one',
+      args: { timezone: 'America/Toronto' },
+    });
+
+    const outcome = await new AuthorizedRuntime().execute({ runId: 'run:clock', now, ...fixture, capability });
+
+    expect(outcome.status).toBe('completed');
+    expect(outcome.observation?.value).toMatchObject({ instant: now, timezone: 'America/Toronto' });
+  });
+
+  test('fails closed when a configured OS sandbox backend is unavailable', async () => {
+    const root = temporaryWorkspace();
+    mkdirSync(join(root, 'sandbox'));
+    const capability = new BoundedProcessCapability(root, {
+      allowedExecutables: ['bun'],
+      sandboxBackend: {
+        id: 'fixture:unavailable',
+        async probe() { return { available: false, detail: 'isolation service stopped' }; },
+        command() { throw new Error('must not build a command'); },
+      },
+    });
+    const fixture = workflowFixture<ProcessArgs>(capability, {
+      id: 'proposal:sandbox-unavailable',
+      capabilityId: capability.manifest.id,
+      target: 'workspace/sandbox',
+      declaredEffects: ['process.execute', 'state.read'],
+      risk: 2,
+      expectedEvidence: ['sandboxed_process'],
+      idempotencyKey: 'sandbox:unavailable',
+      args: { executable: 'bun', arguments: ['--version'] },
+    });
+
+    const outcome = await new AuthorizedRuntime().execute({ runId: 'run:sandbox-unavailable', now, ...fixture, capability });
+    expect(outcome.status).toBe('execution_failed');
+    expect(outcome.execution?.errorCode).toBe('SANDBOX_UNAVAILABLE');
+  });
+
+  test('authenticates gateway ingress and independently verifies allowlisted delivery', async () => {
+    const ingress = new AuthenticatedGatewayIngress('ops', 'fixture-secret', ['operator:one'], () => now);
+    expect(ingress.receive('fixture-secret', { sender: 'operator:one', messageId: 'm1', content: 'Run the bounded task.' }))
+      .toMatchObject({ channelId: 'ops', sender: 'operator:one', provenance: ['gateway:ops', 'sender:operator:one', 'message:m1'] });
+    expect(() => ingress.receive('wrong-secret', { sender: 'operator:one', messageId: 'm2', content: 'no' }))
+      .toThrow('GATEWAY_AUTHENTICATION_FAILED');
+
+    const capability = new BoundedChannelCapability({
+      id: 'ops',
+      allowedRecipients: ['operator:one'],
+      transport: {
+        async send(input) { return { deliveryId: `delivery:${input.idempotencyKey}`, recipient: input.recipient, status: 'accepted', observedAt: now }; },
+        async observe(deliveryId) { return { deliveryId, recipient: 'operator:one', status: 'delivered', observedAt: now }; },
+      },
+    });
+    const fixture = workflowFixture<ChannelDeliveryArgs>(capability, {
+      id: 'proposal:channel',
+      capabilityId: capability.manifest.id,
+      target: 'channel://ops/operator:one',
+      declaredEffects: ['network.request', 'state.write'],
+      risk: 2,
+      expectedEvidence: ['channel_delivery'],
+      idempotencyKey: 'channel:one',
+      args: { recipient: 'operator:one', content: 'Verified update.' },
+    });
+    const outcome = await new AuthorizedRuntime().execute({
+      runId: 'run:channel', now, ...fixture, capability,
+      approval: { id: 'approval:channel', proposalId: fixture.proposal.id, principalId: fixture.proposal.principalId, issuedAt: now, expiresAt: '2026-07-24T12:05:00.000Z' },
+    });
+    expect(outcome.status).toBe('completed');
+    expect(outcome.verification?.reasonCodes).toContain('CHANNEL_DELIVERY_OBSERVED');
+  });
+
   test('normalizes and verifies bounded server-side web search results', async () => {
     let authorization = '';
     const capability = new WebSearchCapability({
@@ -124,6 +241,83 @@ describe('safe external capabilities', () => {
     expect(outcome.observation?.target).toBe('search://web');
     expect(outcome.verification?.reasonCodes).toContain('WEB_SEARCH_RESULTS_OBSERVED');
     expect(authorization).toBe('Bearer test-search-key');
+  });
+
+  test('reproduces session knowledge result identities and reports embedding degradation', async () => {
+    let calls = 0;
+    const capability = new SessionKnowledgeSearchCapability(async input => {
+      calls += 1;
+      return {
+        sessionId: input.sessionId,
+        query: input.query,
+        embeddingAvailable: false,
+        limitation: 'No embedding model configured.',
+        results: [{
+          chunkId: 'chunk:one',
+          documentId: 'file:one',
+          content: 'A provenance-linked runtime fact.',
+          score: 0.8,
+          retrievalMode: 'lexical',
+          provenance: ['ingestion:one', 'file:one', 'chunk:one'],
+        }],
+      };
+    });
+    const fixture = workflowFixture<KnowledgeSearchArgs>(capability, {
+      id: 'proposal:knowledge-search',
+      capabilityId: capability.manifest.id,
+      target: 'session://knowledge/session%3Aone',
+      declaredEffects: ['state.read'],
+      risk: 0,
+      expectedEvidence: ['session_knowledge_observed'],
+      idempotencyKey: 'knowledge-search:one',
+      args: { query: 'runtime fact' },
+    });
+    const outcome = await new AuthorizedRuntime().execute({
+      runId: 'run:knowledge-search', now, ...fixture, capability,
+    });
+    expect(outcome.status).toBe('completed');
+    expect(outcome.verification?.reasonCodes).toEqual([
+      'SESSION_KNOWLEDGE_SEARCH_REPRODUCED',
+      'EMBEDDING_UNAVAILABLE_DEGRADED_MODE',
+    ]);
+    expect(calls).toBe(2);
+  });
+
+  test('falls back to the next configured search provider without exposing credentials', async () => {
+    const requested: string[] = [];
+    const capability = new WebSearchCapability({
+      tavilyApiKey: 'broken-tavily-key',
+      braveApiKey: 'working-brave-key',
+      fetchImpl: async (input, init) => {
+        requested.push(String(input));
+        if (String(input).includes('tavily')) return new Response('unavailable', { status: 503 });
+        expect(new Headers(init?.headers).get('x-subscription-token')).toBe('working-brave-key');
+        return Response.json({
+          web: { results: [{ title: 'Canadian household budgets', url: 'https://example.ca', description: 'Current pressures.' }] },
+        });
+      },
+    });
+    const fixture = workflowFixture<WebSearchArgs>(capability, {
+      id: 'proposal:web-search-fallback',
+      capabilityId: capability.manifest.id,
+      target: 'search://web',
+      declaredEffects: ['network.request'],
+      risk: 1,
+      expectedEvidence: ['web_results_observed'],
+      idempotencyKey: 'web-search:fallback',
+      args: { query: 'Canada household budgets' },
+    });
+
+    const outcome = await new AuthorizedRuntime().execute({
+      runId: 'run:web-search-fallback',
+      now,
+      ...fixture,
+      capability,
+    });
+
+    expect(outcome.status).toBe('completed');
+    expect(requested).toHaveLength(2);
+    expect(outcome.observation?.value).toMatchObject({ provider: 'brave' });
   });
 
   test('writes and independently observes a workspace file', async () => {
@@ -357,6 +551,64 @@ describe('persistent replay', () => {
 });
 
 describe('remote capability boundary', () => {
+  test('discovers only server-authorized MCP tools with an independent observation pair', async () => {
+    const methods: string[] = [];
+    const client = new StreamableHttpMcpClient({
+      endpoint: 'https://mcp.example.test/mcp',
+      allowedEndpoints: ['https://mcp.example.test/mcp'],
+      authorization: 'Bearer server-secret',
+      fetchImpl: async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as { id: number; method: string; params: Record<string, unknown> };
+        methods.push(request.method);
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer server-secret');
+        const result = request.method === 'initialize'
+          ? { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+          : request.method === 'tools/list'
+            ? { tools: [
+                { name: 'ticket_create', description: 'Create a ticket', inputSchema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] } },
+                { name: 'ticket_observe', inputSchema: { type: 'object', properties: { title: { type: 'string' } } } },
+                { name: 'dangerous_unmapped', inputSchema: { type: 'object' } },
+              ] }
+            : { structuredContent: { exists: true, title: 'Bounded ticket' }, content: [] };
+        return Response.json({ jsonrpc: '2.0', id: request.id, result }, { headers: { 'mcp-session-id': 'fixture-session' } });
+      },
+    });
+    const [capability] = await discoverMcpCapabilities(client, [{
+      toolName: 'ticket_create',
+      observationToolName: 'ticket_observe',
+      effects: ['network.request', 'state.write'],
+      requiredEffects: ['network.request', 'state.write'],
+      targetPatterns: ['mcp://tickets/**'],
+      riskCeiling: 4,
+      approval: 'risk_based',
+    }]);
+    expect(capability).toBeDefined();
+    expect(capability!.manifest.id).toBe('mcp.ticket_create');
+    expect(capability!.manifest.requiredEffects).toEqual(['network.request', 'state.write']);
+
+    const fixture = workflowFixture(capability!, {
+      id: 'proposal:mcp-ticket',
+      capabilityId: capability!.manifest.id,
+      target: 'mcp://tickets/new',
+      declaredEffects: ['network.request', 'state.write'],
+      risk: 2,
+      expectedEvidence: ['ticket_observed'],
+      idempotencyKey: 'mcp-ticket:one',
+      args: { title: 'Bounded ticket' },
+    });
+    const outcome = await new AuthorizedRuntime().execute({ runId: 'run:mcp', now, ...fixture, capability: capability! });
+
+    expect(outcome.status).toBe('completed');
+    expect(methods).toEqual(['initialize', 'notifications/initialized', 'tools/list', 'tools/call', 'tools/call']);
+  });
+
+  test('rejects MCP endpoints outside the server allowlist', () => {
+    expect(() => new StreamableHttpMcpClient({
+      endpoint: 'https://untrusted.example/mcp',
+      allowedEndpoints: ['https://trusted.example/mcp'],
+    })).toThrow('MCP endpoint is not in the server allowlist.');
+  });
+
   test('requires an explicit manifest and delegates only after grant validation', async () => {
     let executions = 0;
     const capability = new RemoteCapabilityAdapter({

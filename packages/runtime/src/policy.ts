@@ -58,6 +58,9 @@ export class DeterministicPolicyEngine {
     if (proposal.declaredEffects.some(effect => !manifest.effects.includes(effect))) {
       reasons.push('UNDECLARED_CAPABILITY_EFFECT');
     }
+    if (manifest.requiredEffects?.some(effect => !proposal.declaredEffects.includes(effect))) {
+      reasons.push('REQUIRED_CAPABILITY_EFFECT_OMITTED');
+    }
     if (proposal.declaredEffects.some(effect => intent.prohibitedEffects.includes(effect))) {
       reasons.push('PROHIBITED_EFFECT');
     }

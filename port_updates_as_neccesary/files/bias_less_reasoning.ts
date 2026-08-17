@@ -18,7 +18,13 @@
  *     actually true, only accepts it as given).
  */
 
-import type { Provider } from '../providers/base';
+// Local minimal Provider interface to avoid a hard dependency on ../providers/base
+// (the original import path may not exist in this checkout). This matches the
+// subset of functionality used here: a streamTurn(...) method that returns an
+// object with an optional `text` string.
+export interface Provider {
+  streamTurn(messages: any[], meta: any[], onChunk: () => Promise<any>): Promise<{ text?: string }>;
+}
 
 export interface EpistemicEvaluation {
   rawConclusion: string;
@@ -56,7 +62,7 @@ export class BiasLessReasoningEngine {
     if (provider) {
       try {
         const prompt = `Given this conclusion: "${conclusion}"\n\n` +
-          `Produce exactly 3 genuinely different counterfactual hypotheses that could explain the same ` +
+          `Produce exactly 3 genuinely different counterfactual hypotheses that could explain the same. use internal thinking technuqes to use cognition with simplest signals adn solutions for this request.` +
           `observation, each under 30 words. Return STRICT JSON: {"hypotheses": ["...", "...", "..."]}`;
         const turn = await provider.streamTurn([{ role: 'user', content: prompt }], [], () => Promise.resolve());
         const cleaned = (turn.text || '').trim().replace(/^```(?:json)?\s*|\s*```$/gm, '');
