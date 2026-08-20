@@ -48,6 +48,20 @@ fewer calls by itself.
 
 Reference: [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model)
 
+## Run depth and interruption
+
+Fast, Reasoned, and Agent are observable run policies, not hidden
+chain-of-thought views. Fast uses the smallest bounded step budget. Reasoned
+asks the final synthesizer to explain evidence, tradeoffs, and uncertainty.
+Agent reserves the larger bounded loop for inspection, implementation,
+verification, and requested deliverables. All three retain the same intent,
+approval, capability, and observed-state boundaries.
+
+Stopping uses a server-owned cancellation controller rather than merely
+closing the browser stream. Provider requests receive its signal. If an effect
+has already started, the runtime retains its canonical action records and
+finishes observation/reconciliation before committing the cancelled receipt.
+
 ## Session-pinned embedding spaces
 
 An embedding profile contains a stable ID, label, model, endpoint, optional
@@ -107,6 +121,11 @@ Preview kinds are code, Markdown, JSON, CSV, text, image, audio, video, PDF, and
 binary metadata. Linking a workspace file tells the agent which authorized read
 target is relevant. Linking a session file adds bounded provenance-linked chunks
 to context. A link never grants write, process, network, or cross-session access.
+
+Verified generated files use the same viewer through a separate artifact
+projection. Each record carries session, run, proposal, capability, target,
+digest, media type, and verification evidence. The file is advertised only
+while its workspace target can be re-resolved and observed as a file.
 
 ```text
 operator file link -> bounded resolver -> typed preview / context source

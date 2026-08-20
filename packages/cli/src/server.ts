@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { extname, join, relative, resolve } from 'node:path';
 import {
   AllowlistedHttpCapability,
@@ -59,11 +60,15 @@ import {
   type GroundedClaimVerifier,
   type GroundedObservation,
   type ModelDriver,
+  type ModelRuntimeProfile,
   type ModelRoutingMode,
+  type ReasoningEffort,
 } from '@hyper/model';
 import { createModelDriver, type ModelSelectionOptions } from './run';
+import { LocalInferenceAdmissionController, selectQuantizedModel } from './local-inference';
 import {
   JsonOperatorStore,
+  compactSessionMessages,
   type CorrectionCandidate,
   type CustomHttpToolDefinition,
   type OperatorRun,
@@ -100,6 +105,13 @@ export interface RuntimeProviderConfiguration {
   baseUrl?: string;
   apiKeyEnvironmentName?: string;
   defaultModel?: string;
+  models?: RuntimeModelProfileConfiguration[];
+}
+
+export interface RuntimeModelProfileConfiguration extends Omit<ModelRuntimeProfile, 'countTokens'> {
+  id: string;
+  quantization?: string;
+  parameterBytes?: number;
 }
 
 export interface RuntimeMcpServerConfiguration {
@@ -136,6 +148,12 @@ export interface RuntimeHttpConfig extends Omit<ModelSelectionOptions, 'provider
   modelRouteSchedule?: ModelRouteSelection[];
   modelRouteFailureThreshold?: number;
   modelRouteCooldownPasses?: number;
+  localInferenceLimits?: {
+    maxConcurrent?: number;
+    minimumFreeMemoryBytes?: number;
+    maximumLoadPerCpu?: number;
+    gpuMemoryBytes?: number;
+  };
   processSandboxBackend?: ProcessSandboxBackend;
   mcpServers?: RuntimeMcpServerConfiguration[];
   gatewayCapabilities?: CapabilityAdapter[];
@@ -161,11 +179,54 @@ interface RuntimeRunRequest {
   lab?: unknown;
   linked_files?: unknown;
   auto_mode?: unknown;
+  run_mode?: unknown;
+  reasoning_effort?: unknown;
 }
 
 export interface ModelRouteSelection {
   provider: string;
   model: string;
+}
+
+export interface TaskComplexityAssessment {
+  tier: 'small' | 'strong';
+  score: number;
+  reasons: string[];
+}
+
+export function assessTaskComplexity(objective: string): TaskComplexityAssessment {
+  const text = objective.toLowerCase();
+  const reasons: string[] = [];
+  let score = Math.min(3, Math.floor(objective.length / 700));
+  const signals: Array<[RegExp, number, string]> = [
+    [/\b(implement|refactor|debug|migrat|architect|security|adversarial)\w*\b/, 3, 'engineering'],
+    [/\b(research|compare|benchmark|evaluate|investigate)\w*\b/, 2, 'analysis'],
+    [/\b(multi[- ]?(file|step|provider|agent)|end[- ]to[- ]end|full system)\b/, 3, 'multi-step'],
+    [/\b(test|verify|profile|optimi[sz]|production|industry)\w*\b/, 2, 'verification'],
+  ];
+  for (const [pattern, weight, reason] of signals) {
+    if (!pattern.test(text)) continue;
+    score += weight;
+    reasons.push(reason);
+  }
+  return { tier: score >= 4 ? 'strong' : 'small', score, reasons };
+}
+
+function routeTier(config: RuntimeHttpConfig, route: ModelRouteSelection): 'small' | 'strong' | undefined {
+  const provider = providerConfigurations(config).find(item => item.id === route.provider);
+  return provider?.models?.find(model => model.id === route.model)?.tier;
+}
+
+export function routeModelsByComplexity(
+  config: RuntimeHttpConfig,
+  routes: ModelRouteSelection[],
+  assessment: TaskComplexityAssessment,
+): ModelRouteSelection[] {
+  return routes.map((route, index) => ({ route, index, tier: routeTier(config, route) }))
+    .sort((left, right) =>
+      Number(right.tier === assessment.tier) - Number(left.tier === assessment.tier)
+      || left.index - right.index,
+    ).map(item => item.route);
 }
 
 export type UiEventState = 'pending' | 'running' | 'success' | 'warning' | 'error' | 'blocked' | 'info';
@@ -344,7 +405,35 @@ function providerConfigurations(config: RuntimeHttpConfig) {
 
 type ProviderConfiguration = ReturnType<typeof providerConfigurations>[number];
 
-function providerSelection(config: RuntimeHttpConfig, providerId: RuntimeProviderId, model?: string): ModelSelectionOptions {
+function reasoningEffort(value: unknown): ReasoningEffort | undefined {
+  return value === 'off' || value === 'low' || value === 'medium' || value === 'high' || value === 'max'
+    ? value
+    : undefined;
+}
+
+function configuredModelProfile(
+  provider: ProviderConfiguration,
+  model: string,
+): ModelRuntimeProfile | undefined {
+  const profile = provider.models?.find(item => item.id === model);
+  if (!profile) return undefined;
+  return {
+    contextWindow: profile.contextWindow,
+    maxOutputTokens: profile.maxOutputTokens,
+    reasoningEfforts: [...profile.reasoningEfforts],
+    defaultReasoningEffort: profile.defaultReasoningEffort,
+    tier: profile.tier,
+    inputCostPerMillionUsd: profile.inputCostPerMillionUsd,
+    outputCostPerMillionUsd: profile.outputCostPerMillionUsd,
+  };
+}
+
+function providerSelection(
+  config: RuntimeHttpConfig,
+  providerId: RuntimeProviderId,
+  model?: string,
+  requestedReasoningEffort?: ReasoningEffort,
+): ModelSelectionOptions {
   const provider = providerConfigurations(config).find(item => item.id === providerId);
   if (!provider?.configured) throw new Error(`Provider ${providerId} is not configured.`);
   const selectedModel = model?.trim() || provider.defaultModel;
@@ -356,6 +445,8 @@ function providerSelection(config: RuntimeHttpConfig, providerId: RuntimeProvide
     apiKeyEnvironmentName: provider.apiKeyEnvironmentName,
     environment: config.environment,
     modelTimeoutMs: config.modelTimeoutMs,
+    reasoningEffort: requestedReasoningEffort,
+    modelProfile: configuredModelProfile(provider, selectedModel),
   };
 }
 
@@ -368,6 +459,17 @@ function providerModelsEndpoint(provider: ProviderConfiguration): string {
     return value.toString();
   }
   return `${base}/models${provider.transport === 'anthropic' ? '?limit=100' : ''}`;
+}
+
+function localProvider(provider: ProviderConfiguration | undefined): boolean {
+  if (!provider) return false;
+  if (provider.transport === 'ollama') return true;
+  try {
+    const host = new URL(provider.baseUrl ?? '').hostname;
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch {
+    return false;
+  }
 }
 
 async function discoverProviderModels(config: RuntimeHttpConfig, provider: ProviderConfiguration) {
@@ -409,12 +511,33 @@ async function discoverProviderModels(config: RuntimeHttpConfig, provider: Provi
       provider.id === 'opencode'
       && !/^(deepseek|minimax|glm|kimi|big-pickle|mimo|laguna|ling|longcat|north-mini|nemotron)/i.test(id)
     ) return [];
+    const configuredProfile = provider.models?.find(profile => profile.id === id);
+    const details = item.details && typeof item.details === 'object'
+      ? item.details as Record<string, unknown>
+      : {};
+    const discoveredContext = [item.context_window, item.context_length, item.max_context_length, item.input_token_limit]
+      .find(value => typeof value === 'number' && Number.isFinite(value) && value > 0) as number | undefined;
+    const discoveredOutput = [item.max_output_tokens, item.output_token_limit]
+      .find(value => typeof value === 'number' && Number.isFinite(value) && value > 0) as number | undefined;
     return [{
       id,
       name,
       owned_by: typeof item.owned_by === 'string' ? item.owned_by : undefined,
       modified_at: typeof item.modified_at === 'string' ? item.modified_at : undefined,
       size: typeof item.size === 'number' ? item.size : undefined,
+      context_window: configuredProfile?.contextWindow ?? discoveredContext ?? null,
+      max_output_tokens: configuredProfile?.maxOutputTokens ?? discoveredOutput ?? null,
+      reasoning_efforts: configuredProfile?.reasoningEfforts ?? [],
+      tier: configuredProfile?.tier ?? null,
+      quantization: configuredProfile?.quantization
+        ?? (typeof details.quantization_level === 'string' ? details.quantization_level : null),
+      parameter_size: typeof details.parameter_size === 'string' ? details.parameter_size : null,
+      capability_source: configuredProfile ? 'configured' : discoveredContext ? 'provider' : 'unavailable',
+      limitations: [
+        ...(configuredProfile || discoveredContext ? [] : ['context_window_unknown']),
+        ...(configuredProfile || discoveredOutput ? [] : ['max_output_tokens_unknown']),
+        ...(configuredProfile?.reasoningEfforts.length ? [] : ['reasoning_effort_not_advertised']),
+      ],
     }];
   }).sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -530,6 +653,7 @@ async function createRuntimeModelDriver(
   config: RuntimeHttpConfig,
   selections: ModelRouteSelection[],
   mode: ModelRoutingMode,
+  requestedReasoningEffort: ReasoningEffort | undefined,
   onFailure: (failure: { operation: 'propose' | 'synthesize'; routeId: string; error: string }) => void,
   onRoute: (attempt: { operation: 'propose' | 'synthesize'; routeId: string; pass: number; preferred: boolean; attempt: number }) => void,
   onHealth: (event: { routeId: string; pass: number; status: 'opened' | 'skipped' | 'recovered'; consecutiveFailures: number; cooldownUntilPass: number }) => void,
@@ -538,7 +662,7 @@ async function createRuntimeModelDriver(
   for (const [index, route] of selections.entries()) {
     const routeId = `${index + 1}:${route.provider}/${route.model}`;
     try {
-      const selection = providerSelection(config, route.provider, route.model);
+      const selection = providerSelection(config, route.provider, route.model, requestedReasoningEffort);
       const driver = config.modelDriverFactory
         ? await config.modelDriverFactory(selection)
         : await createModelDriver(selection);
@@ -700,6 +824,12 @@ export function projectPassMetrics(events: LedgerEvent[]) {
       ? event.payload.usage as Record<string, unknown>
       : {},
   );
+  const synthesisUsage = events.filter(event => event.type === 'response.synthesized').map(event =>
+    typeof event.payload.usage === 'object' && event.payload.usage
+      ? event.payload.usage as Record<string, unknown>
+      : {},
+  );
+  const allUsage = [...usage, ...synthesisUsage];
   const systemHashes = requestAudits.flatMap(audit =>
     typeof audit.systemHash === 'string' ? [audit.systemHash] : [],
   );
@@ -749,15 +879,31 @@ export function projectPassMetrics(events: LedgerEvent[]) {
     average_budget_utilization: contextEvents.length
       ? utilizationTotal / contextEvents.length
       : 0,
-    model_input_tokens: usage.reduce(
+    model_input_tokens: allUsage.reduce(
       (total, item) => total + finiteNumber(item.inputTokens),
       0,
     ),
-    model_output_tokens: usage.reduce(
+    model_output_tokens: allUsage.reduce(
       (total, item) => total + finiteNumber(item.outputTokens),
       0,
     ),
-    model_latency_ms: usage.reduce(
+    model_cached_input_tokens: allUsage.reduce(
+      (total, item) => total + finiteNumber(item.cachedInputTokens),
+      0,
+    ),
+    model_cache_write_tokens: allUsage.reduce(
+      (total, item) => total + finiteNumber(item.cacheWriteTokens),
+      0,
+    ),
+    model_reasoning_tokens: allUsage.reduce(
+      (total, item) => total + finiteNumber(item.reasoningTokens),
+      0,
+    ),
+    model_cost_usd: allUsage.reduce(
+      (total, item) => total + finiteNumber(item.costUsd),
+      0,
+    ),
+    model_latency_ms: allUsage.reduce(
       (total, item) => total + finiteNumber(item.latencyMs),
       0,
     ),
@@ -1133,6 +1279,12 @@ export function adaptLedgerEvent(event: LedgerEvent, options: UiEventProjectionO
     case 'memory.verified_outcome_committed':
       return [projectedEvent(base, 'memory.commit', 'commit', 'Saved verified outcome to this chat',
         `${(payload.evidenceRefs as unknown[] | undefined)?.length ?? 0} evidence references were stored in session-isolated memory; intermediate reasoning was not stored.`, payload)];
+    case 'session.artifact_projected':
+      return [projectedEvent(base, 'artifact.ready', 'commit', 'Generated artifact is ready',
+        `${readableTarget(payload.target)} is linked to its verified action and can be opened from this session.`, payload)];
+    case 'operator.run_cancelled':
+      return [projectedEvent(base, 'run.cancelled', 'done', 'Run cancelled cleanly',
+        `${payload.reconciledSteps ?? 0} completed step(s) were retained and any observed effects remain in the canonical trail.`, payload)];
     case 'operator.run_failed':
       return [projectedEvent(base, 'run.error', 'error', 'Run stopped unexpectedly',
         summary(payload.reason || 'The runtime stopped before it could commit a terminal outcome.'), payload)];
@@ -1240,6 +1392,26 @@ function finalText(result: WorkflowRunResult): string {
   return `Workflow stopped: ${result.reasonCodes.join(', ')}`;
 }
 
+export function synthesisDecision(
+  result: WorkflowRunResult,
+  objective: string,
+  runMode: 'fast' | 'reasoned' | 'agent',
+): { synthesize: boolean; reason: string } {
+  if (result.status !== 'completed') return { synthesize: false, reason: 'workflow_not_completed' };
+  if (runMode === 'fast') return { synthesize: false, reason: 'fast_mode_verified_runtime_answer' };
+  const verifiedWrites = result.steps.filter(step =>
+    step.outcome?.status === 'completed'
+    && step.outcome.verification?.passed === true
+    && step.proposal.kind === 'action'
+    && step.proposal.action.declaredEffects.includes('state.write'),
+  );
+  if (
+    verifiedWrites.length > 0
+    && /\b(create|write|save|generate|implement|update|edit|build)\w*\b/i.test(objective)
+  ) return { synthesize: false, reason: 'verified_artifact_is_primary_answer' };
+  return { synthesize: true, reason: 'natural_language_synthesis_required' };
+}
+
 async function parseBody(req: Request): Promise<RuntimeRunRequest> {
   const length = Number(req.headers.get('content-length') ?? 0);
   if (length > 1_000_000) throw new Error('Request body exceeds 1 MB.');
@@ -1342,6 +1514,12 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
   const operatorStore = new JsonOperatorStore(
     config.operatorDataPath ?? join(config.ledgerDirectory, 'operator-state.json'),
   );
+  const localAdmission = new LocalInferenceAdmissionController({
+    maxConcurrent: config.localInferenceLimits?.maxConcurrent ?? 2,
+    minimumFreeMemoryBytes: config.localInferenceLimits?.minimumFreeMemoryBytes ?? 256 * 1024 * 1024,
+    maximumLoadPerCpu: config.localInferenceLimits?.maximumLoadPerCpu ?? 4,
+    gpuMemoryBytes: config.localInferenceLimits?.gpuMemoryBytes,
+  });
   const workspaceResolver = new WorkspaceTargetResolver(config.workspace);
   const embeddingProfileForSession = (sessionId: string): EmbeddingProfile | undefined => {
     const selected = operatorStore.session(sessionId)?.embeddingProfileId;
@@ -1456,6 +1634,10 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     proposalId: string;
     resolve: (approval: Approval | undefined) => void;
     timeout: ReturnType<typeof setTimeout>;
+  }>();
+  const activeRuns = new Map<string, {
+    controller: AbortController;
+    sessionId: string;
   }>();
   const handler = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -1637,17 +1819,35 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       }));
       return json({ providers });
     }
+    if (req.method === 'GET' && url.pathname === '/api/runtime/resources') {
+      return json({ local_inference: localAdmission.snapshot() });
+    }
     if (req.method === 'GET' && url.pathname.startsWith('/api/models/')) {
       const providerId = decodeURIComponent(url.pathname.slice('/api/models/'.length));
       const provider = providerConfigurations(config).find(item => item.id === providerId);
       if (!provider) return json({ error: 'provider is not configured' }, 404);
       try {
         const models = await discoverProviderModels(config, provider);
+        const resources = localAdmission.snapshot();
+        const recommended = localProvider(provider)
+          ? selectQuantizedModel(models.flatMap(model =>
+              typeof model.size === 'number' ? [{
+                id: model.id,
+                bytes: model.size,
+                quantization: model.quantization ?? undefined,
+                tier: model.tier ?? undefined,
+              }] : [],
+            ), resources.gpuMemoryBytes ?? resources.freeMemoryBytes, 'small')
+          : undefined;
         return json({
           provider: provider.id,
           connected: true,
           default_model: discoveredDefaultModel(provider, models),
           models,
+          recommended_model: recommended?.id,
+          recommendation_reason: recommended
+            ? 'Largest preferred-tier quantization fitting the local 80% memory admission budget.'
+            : undefined,
         });
       } catch (error) {
         return json({
@@ -1742,6 +1942,40 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       );
       return json({ session }, 201);
     }
+    const sessionBranchMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/branches$/);
+    if (sessionBranchMatch && req.method === 'POST') {
+      const sourceSessionId = decodeURIComponent(sessionBranchMatch[1]!);
+      const body = await req.json().catch(() => ({})) as { message_id?: unknown };
+      const messageId = typeof body.message_id === 'string' ? body.message_id : '';
+      if (!messageId) return json({ error: 'message_id is required' }, 400);
+      try {
+        const session = operatorStore.branchSession({
+          sourceSessionId,
+          messageId,
+          newSessionId: `session:${crypto.randomUUID()}`,
+          now: new Date().toISOString(),
+        });
+        return json({ session }, 201);
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, 404);
+      }
+    }
+    const sessionLifecycleMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
+    if (sessionLifecycleMatch && req.method === 'DELETE') {
+      const sessionId = decodeURIComponent(sessionLifecycleMatch[1]!);
+      if ([...activeRuns.values()].some(run => run.sessionId === sessionId)) {
+        return json({ error: 'Cancel the active run before deleting this session.' }, 409);
+      }
+      const removed = operatorStore.deleteSession(sessionId);
+      if (!removed) return json({ error: 'unknown session' }, 404);
+      for (const file of removed.files) removeStoredSessionFile(file.storagePath, sessionFileDirectory);
+      return json({
+        deleted: true,
+        session_id: sessionId,
+        removed_files: removed.files.length,
+        retained_canonical_ledgers: removed.runIds.length,
+      });
+    }
     const sessionEmbeddingMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/embedding$/);
     if (sessionEmbeddingMatch && req.method === 'PUT') {
       const sessionId = decodeURIComponent(sessionEmbeddingMatch[1]!);
@@ -1771,6 +2005,12 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
         return json({
           session_id: sessionId,
           files: operatorStore.listSessionFiles(sessionId).map(publicSessionFile),
+          artifacts: operatorStore.listArtifacts(sessionId).map(artifact => ({
+            ...artifact,
+            previewKind: previewKind(artifact.name, artifact.mediaType),
+            previewUrl: `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifact.id)}/preview`,
+            contentUrl: `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifact.id)}/content`,
+          })),
           embedding: {
             profile_id: session.embeddingProfileId ?? selectedProfile?.id ?? 'lexical',
             locked_at: session.embeddingLockedAt,
@@ -1858,6 +2098,32 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
         }
       }
       return json({ session_id: sessionId, files: uploaded }, 201);
+    }
+    const sessionArtifactMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/artifacts\/([^/]+)\/(preview|content)$/);
+    if (sessionArtifactMatch && req.method === 'GET') {
+      const sessionId = decodeURIComponent(sessionArtifactMatch[1]!);
+      const artifactId = decodeURIComponent(sessionArtifactMatch[2]!);
+      const operation = sessionArtifactMatch[3]!;
+      const artifact = operatorStore.listArtifacts(sessionId).find(item => item.id === artifactId);
+      if (!artifact) return json({ error: 'unknown session artifact' }, 404);
+      try {
+        const path = workspaceResolver.resolve(artifact.target);
+        if (operation === 'content') return inlineFileResponse(path, artifact.mediaType);
+        const info = statSync(path);
+        const kind = previewKind(artifact.name, artifact.mediaType);
+        const textKind = ['code', 'markdown', 'json', 'csv', 'text'].includes(kind);
+        const content = textKind ? readFileSync(path).subarray(0, PREVIEW_TEXT_BYTES).toString('utf8') : undefined;
+        return json({
+          scope: 'artifact', id: artifact.id, path: artifact.target, name: artifact.name,
+          mediaType: artifact.mediaType, previewKind: kind, sizeBytes: info.size,
+          modifiedAt: info.mtime.toISOString(), truncated: textKind && info.size > PREVIEW_TEXT_BYTES,
+          ...(content !== undefined ? { content } : {}),
+          contentUrl: `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifact.id)}/content`,
+          provenance: { runId: artifact.runId, proposalId: artifact.proposalId, evidenceRefs: artifact.evidenceRefs },
+        });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, 409);
+      }
     }
     const sessionFilePreviewMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/files\/([^/]+)\/preview$/);
     if (sessionFilePreviewMatch && req.method === 'GET') {
@@ -2571,6 +2837,20 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       } : undefined);
       return json({ ok: true, approved: body.approved === true, proposal_id: pending.proposalId });
     }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/cancel')) {
+      const runId = decodeURIComponent(url.pathname.slice('/api/runs/'.length, -'/cancel'.length));
+      const active = activeRuns.get(runId);
+      if (!active) {
+        const run = operatorStore.run(runId);
+        return run
+          ? json({ error: `run is already ${run.status}`, status: run.status }, 409)
+          : json({ error: 'unknown run' }, 404);
+      }
+      const run = operatorStore.run(runId);
+      if (run) operatorStore.recordRun({ ...run, status: 'cancelling' });
+      active.controller.abort(new DOMException('Cancelled by operator.', 'AbortError'));
+      return json({ ok: true, run_id: runId, status: 'cancelling' }, 202);
+    }
     if (req.method === 'POST' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/resume')) {
       const sourceRunId = decodeURIComponent(url.pathname.slice('/api/runs/'.length, -'/resume'.length));
       const sourceRun = operatorStore.run(sourceRunId);
@@ -2666,14 +2946,19 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       }
     }
     const savedAgent = operatorStore.session(sessionId)?.agent;
+    const runMode: 'fast' | 'reasoned' | 'agent' = body.run_mode === 'fast' || body.run_mode === 'reasoned' || body.run_mode === 'agent'
+      ? body.run_mode
+      : 'reasoned';
     const autoMode = body.auto_mode === undefined ? savedAgent?.autoMode ?? false : body.auto_mode === true;
     const autoMaxSteps = Math.min(
       config.autoRunLimits?.maxSteps ?? 24,
       savedAgent?.autoMaxSteps ?? config.autoRunLimits?.maxSteps ?? 24,
     );
-    const selectedProvider = typeof body.provider === 'string'
+    let selectedProvider = typeof body.provider === 'string'
       ? body.provider
       : savedAgent?.provider ?? config.provider;
+    const selectedReasoningEffort = reasoningEffort(body.reasoning_effort)
+      ?? savedAgent?.reasoningEffort;
     if (!providerConfigurations(config).some(item => item.id === selectedProvider)) {
       return json({ error: `Unknown provider ${selectedProvider}.` }, 400);
     }
@@ -2683,11 +2968,12 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
         config,
         selectedProvider,
         typeof body.model === 'string' ? body.model.slice(0, 200) : savedAgent?.model,
+        selectedReasoningEffort,
       );
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
-    const selectedModel = selection.model!;
+    let selectedModel = selection.model!;
     const selectedRoutingMode = modelRoutingMode(
       body.routing_mode,
       savedAgent?.routingMode ?? config.modelRoutingMode,
@@ -2732,6 +3018,13 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       }
     }
     routingRoutes = routingRoutes.slice(0, targetCount);
+    const complexity = assessTaskComplexity(objective);
+    const automaticModelRouting = body.provider === undefined && body.model === undefined;
+    if (automaticModelRouting) {
+      routingRoutes = routeModelsByComplexity(config, routingRoutes, complexity);
+      selectedProvider = routingRoutes[0]?.provider ?? selectedProvider;
+      selectedModel = routingRoutes[0]?.model ?? selectedModel;
+    }
     const routeError = validateRouteSchedule({
       mode: selectedRoutingMode,
       routes: routingRoutes,
@@ -2746,6 +3039,17 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       }, 400);
     }
     const runId = `run:${crypto.randomUUID()}`;
+    const selectedProviderConfiguration = providerConfigurations(config).find(item => item.id === selectedProvider);
+    const selectedModelProfile = selectedProviderConfiguration
+      ? configuredModelProfile(selectedProviderConfiguration, selectedModel)
+      : undefined;
+    const contextTokenBudget = selectedModelProfile
+      ? Math.max(512, Math.min(64_000,
+          selectedModelProfile.contextWindow - selectedModelProfile.maxOutputTokens - 6_000))
+      : 4_000;
+    const runAbort = new AbortController();
+    if (req.signal.aborted) runAbort.abort(req.signal.reason);
+    else req.signal.addEventListener('abort', () => runAbort.abort(req.signal.reason), { once: true });
     const requiredEvidence = strings(body.required_evidence, ['runtime_outcome_observed']);
     const runRegistry = await registry();
     const profileCapabilities = [
@@ -2795,6 +3099,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       profile: selectedProfile,
       provider: selectedProvider,
       model: selectedModel,
+      reasoningEffort: selectedReasoningEffort,
       routingMode: selectedRoutingMode,
       fallbackProviders,
       routingRoutes,
@@ -2826,13 +3131,11 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       } : {}),
     };
     operatorStore.recordRun(runProjection);
-    const priorMessages = (operatorStore.messages(sessionId) ?? [])
-      .filter(message => message.runId !== runId)
-      .slice(-12);
-    while (
-      priorMessages.length > 1
-      && priorMessages.reduce((total, message) => total + message.content.length, 0) > 8_000
-    ) priorMessages.shift();
+    activeRuns.set(runId, { controller: runAbort, sessionId });
+    const historyCompaction = compactSessionMessages(
+      (operatorStore.messages(sessionId) ?? []).filter(message => message.runId !== runId),
+    );
+    const priorMessages = historyCompaction.retained;
     const transcript = priorMessages.map(message =>
       `${message.role === 'user' ? 'Operator' : 'Assistant'}: ${message.content}`,
     ).join('\n\n').slice(-8_000);
@@ -2848,21 +3151,38 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     } = sessionFiles.length > 0
       ? await searchKnowledge({ sessionId, query: objective, maxResults: 8 })
       : { sessionId, query: objective, results: [], embeddingAvailable: false };
-    const historySources: ContextSource[] = transcript ? [{
+    const historySources: ContextSource[] = [
+      ...(historyCompaction.summary ? [{
+        id: `history:${sessionId}:compacted`,
+        title: 'Rebuildable compacted session history',
+        content: historyCompaction.summary,
+        kind: 'conversation' as const,
+        authority: 'data' as const,
+        validity: 'active' as const,
+        provenance: historyCompaction.sourceMessageIds,
+        tags: ['conversation', 'compacted', selectedProfile],
+        createdAt: priorMessages[0]?.at ?? now,
+        priority: 850,
+        semanticTag: 'current_direction' as const,
+        confidence: 0.8,
+        rebuildable: true,
+      }] : []),
+      ...(transcript ? [{
       id: `history:${sessionId}:recent-transcript`,
       title: 'Recent session transcript in chronological order',
       content: transcript,
-      kind: 'conversation',
-      authority: 'data',
-      validity: 'active',
+      kind: 'conversation' as const,
+      authority: 'data' as const,
+      validity: 'active' as const,
       provenance: priorMessages.map(message => message.id),
       tags: ['conversation', 'recent', 'current-direction', selectedProfile],
       createdAt: priorMessages.at(-1)?.at ?? now,
       priority: 900,
-      semanticTag: 'current_direction',
+      semanticTag: 'current_direction' as const,
       confidence: 1,
       rebuildable: true,
-    }] : [];
+      }] : []),
+    ];
     const recalledMemory = operatorStore.recallMemory(sessionId, objective, 8);
     const memorySources: ContextSource[] = recalledMemory
       .map(({ record: memory, score, reasons }, index) => ({
@@ -2996,6 +3316,19 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       rebuildable: true,
     }] : []), ...linkedFileSources, ...historySources, ...knowledgeStatusSources, ...knowledgeSources, ...retrievedSources, ...memorySources];
 
+    let releaseLocalAdmission: (() => void) | undefined;
+    if (localProvider(providerConfigurations(config).find(item => item.id === selectedProvider))) {
+      const admission = localAdmission.tryAcquire();
+      if (!admission.accepted) {
+        return json({
+          error: 'Local inference admission rejected the run.',
+          reason: admission.reason,
+          resources: admission.snapshot,
+        }, 429);
+      }
+      releaseLocalAdmission = admission.release;
+    }
+
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         let streamOpen = true;
@@ -3048,6 +3381,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
           fallback_providers: fallbackProviders,
           routing_routes: routingRoutes,
           auto_mode: autoMode,
+          run_mode: runMode,
           auto_limits: autoMode ? {
             max_steps: autoMaxSteps,
             max_wall_time_ms: config.autoRunLimits?.maxWallTimeMs ?? 600_000,
@@ -3063,6 +3397,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               config,
               routingRoutes,
               selectedRoutingMode,
+              selectedReasoningEffort,
               failure => ledger.append(runId, 'model.route_failed', failure),
               attempt => ledger.append(runId, 'model.route_selected', attempt),
               health => ledger.append(runId, 'model.route_health_changed', health),
@@ -3081,7 +3416,24 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               routingMode: selectedRoutingMode,
               fallbackProviders,
               routingRoutes,
+              modelRoutingDecision: {
+                automatic: automaticModelRouting,
+                complexity,
+                selectedTier: routingRoutes[0] ? routeTier(config, routingRoutes[0]) : undefined,
+              },
+              reasoningEffort: selectedReasoningEffort,
+              modelContext: selectedModelProfile ? {
+                contextWindow: selectedModelProfile.contextWindow,
+                maxOutputTokens: selectedModelProfile.maxOutputTokens,
+                contextTokenBudget,
+                source: 'configured',
+              } : {
+                contextTokenBudget,
+                source: 'fallback',
+                limitation: 'Provider/model context window was not discoverable or configured.',
+              },
               autoMode,
+              runMode,
               autoLimits: autoMode ? {
                 maxSteps: autoMaxSteps,
                 maxWallTimeMs: config.autoRunLimits?.maxWallTimeMs ?? 600_000,
@@ -3092,6 +3444,15 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               labAgentId: lab?.agentId,
               labModules: lab?.modules,
             });
+            if (historyCompaction.omittedCount > 0) {
+              ledger.append(runId, 'session.history_compacted', {
+                sessionId,
+                omittedCount: historyCompaction.omittedCount,
+                sourceMessageIds: historyCompaction.sourceMessageIds,
+                digest: historyCompaction.digest,
+                rebuildable: true,
+              });
+            }
             const result = await runner.run({
               runId,
               intent,
@@ -3121,12 +3482,27 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                   'Auto mode is enabled: keep resolving reversible implementation and research preferences from intent, evidence, and repository conventions until completion is verified or a material operator decision is required.',
                   'Auto mode never expands authority. Pause for credentials, external or destructive effects, an unknown concrete target, or a material scope change.',
                 ] : []),
+                ...(runMode === 'fast' ? [
+                  'Fast mode is selected: use the shortest relevant verified path and keep the final answer compact but complete.',
+                ] : runMode === 'agent' ? [
+                  'Agent mode is selected: continue through inspection, implementation, observed-state verification, and a concrete deliverable when the objective requests one.',
+                  'Report primary changed or generated files and the strongest checks that actually ran.',
+                ] : [
+                  'Reasoned mode is selected: examine relevant evidence and tradeoffs, resolve reversible ambiguity from context, and produce a substantive answer without exposing hidden reasoning.',
+                ]),
                 ...strings(body.constraints),
               ],
               sources,
               initialStrategyId: 'strategy:operator-request',
               focusTags: ['operator', selectedProfile],
-              maxSteps: autoMode ? autoMaxSteps : selectedProfile === 'partner' || selectedProfile === 'coder' ? 24 : 12,
+              tokenBudget: contextTokenBudget,
+              maxSteps: autoMode
+                ? autoMaxSteps
+                : runMode === 'fast'
+                  ? 6
+                  : runMode === 'agent' || selectedProfile === 'partner' || selectedProfile === 'coder'
+                    ? 24
+                    : 12,
               ...(autoMode ? { maxWallTimeMs: config.autoRunLimits?.maxWallTimeMs ?? 600_000 } : {}),
               clarificationPolicy: ({ proposal, availableCapabilities }) => assessOperatorClarification({
                 objective,
@@ -3135,7 +3511,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                 transcript,
                 authorizedCapabilityIds: availableCapabilities.map(capability => capability.id),
               }),
-              signal: req.signal,
+              signal: runAbort.signal,
               resumeFrom: resumeSeed,
               requestApprovalFor: proposalId => new Promise(resolveApproval => {
                 const timeout = setTimeout(() => {
@@ -3143,7 +3519,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                   resolveApproval(undefined);
                 }, 5 * 60_000);
                 pendingApprovals.set(runId, { proposalId, resolve: resolveApproval, timeout });
-                req.signal.addEventListener('abort', () => {
+                runAbort.signal.addEventListener('abort', () => {
                   const pending = pendingApprovals.get(runId);
                   if (!pending) return;
                   clearTimeout(pending.timeout);
@@ -3153,6 +3529,62 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               }),
             });
             const observations = groundedObservations(result);
+            const endedAt = new Date().toISOString();
+            for (const step of result.steps) {
+              if (
+                step.proposal.kind !== 'action'
+                || step.outcome?.status !== 'completed'
+                || step.outcome.verification?.passed !== true
+                || !step.proposal.action.declaredEffects.includes('state.write')
+                || !step.proposal.action.target.startsWith('workspace/')
+              ) continue;
+              try {
+                const path = workspaceResolver.resolve(step.proposal.action.target);
+                const info = statSync(path);
+                if (!info.isFile() || fileBrowserDenied(step.proposal.action.target)) continue;
+                const bytes = readFileSync(path);
+                operatorStore.addArtifact({
+                  id: `artifact:${runId}:${step.proposal.action.id}`,
+                  sessionId,
+                  runId,
+                  proposalId: step.proposal.action.id,
+                  capabilityId: step.proposal.action.capabilityId,
+                  target: step.proposal.action.target,
+                  name: step.proposal.action.target.split('/').at(-1) ?? step.proposal.action.target,
+                  mediaType: mediaTypeFor(step.proposal.action.target),
+                  sizeBytes: info.size,
+                  sha256: createHash('sha256').update(bytes).digest('hex'),
+                  evidenceRefs: step.outcome.verification.evidence.map(item => item.id),
+                  createdAt: endedAt,
+                  verified: true,
+                });
+                ledger.append(runId, 'session.artifact_projected', {
+                  artifactId: `artifact:${runId}:${step.proposal.action.id}`,
+                  sessionId,
+                  target: step.proposal.action.target,
+                  proposalId: step.proposal.action.id,
+                  evidenceRefs: step.outcome.verification.evidence.map(item => item.id),
+                });
+              } catch {
+                // A disappeared output remains represented by its canonical
+                // action and observation, but is not advertised as openable.
+              }
+            }
+            if (result.status === 'cancelled') {
+              ledger.append(runId, 'operator.run_cancelled', {
+                sessionId,
+                reasonCodes: result.reasonCodes,
+                reconciledSteps: result.steps.length,
+              });
+              operatorStore.recordRun({
+                ...runProjection,
+                status: 'cancelled',
+                endedAt,
+                receiptHash: result.receiptHash,
+                evidenceRefs: observations.flatMap(item => item.evidenceRefs),
+              });
+              return;
+            }
             let response = {
               answer: finalText(result),
               evidenceRefs: observations.flatMap(item => item.evidenceRefs),
@@ -3166,7 +3598,8 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               model: 'runtime:deterministic-fallback',
               usage: { inputTokens: 0, outputTokens: 0, latencyMs: 0 },
             };
-            if (result.status === 'completed' && modelDriver.synthesize) {
+            const synthesis = synthesisDecision(result, objective, runMode);
+            if (synthesis.synthesize && modelDriver.synthesize) {
               try {
                 const groundedRequest = {
                   objective,
@@ -3174,9 +3607,10 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                   observations,
                   completionCriteria: intent.completionCriteria,
                   requiredEvidence: intent.requiredEvidence,
+                  responseDepth: runMode,
                 };
                 response = await verifyGroundedResponse(
-                  await modelDriver.synthesize(groundedRequest),
+                  await modelDriver.synthesize({ ...groundedRequest, signal: runAbort.signal }),
                   groundedRequest,
                   config.groundedClaimVerifier,
                 );
@@ -3185,6 +3619,11 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                   reason: error instanceof Error ? error.message : String(error),
                 });
               }
+            } else {
+              ledger.append(runId, 'response.synthesis_skipped', {
+                reason: synthesis.reason,
+                deterministicAnswer: true,
+              });
             }
             ledger.append(runId, 'response.synthesized', {
               text: response.answer,
@@ -3195,7 +3634,6 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               usage: response.usage,
               generated: response.model !== 'runtime:deterministic-fallback',
             });
-            const endedAt = new Date().toISOString();
             operatorStore.appendMessage(sessionId, {
               id: `message:${runId}:assistant`,
               role: 'assistant',
@@ -3283,6 +3721,8 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               } satisfies UiEvent });
             }
           } finally {
+            releaseLocalAdmission?.();
+            activeRuns.delete(runId);
             closeStream();
           }
         })();

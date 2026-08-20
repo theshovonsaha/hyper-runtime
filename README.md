@@ -154,6 +154,7 @@ bun run hyper -- run \
 ```
 
 See [task format and live-provider usage](docs/TASK_FORMAT.md).
+See [provider intelligence, context budgets, local admission, and live inference evidence](docs/PROVIDER_INTELLIGENCE.md).
 For a claim-to-contract-to-event-to-test map, see
 [runtime guarantee traceability](docs/TRACEABILITY.md).
 

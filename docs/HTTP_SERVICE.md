@@ -97,11 +97,16 @@ credentials. `GET /api/models/:provider` discovers the live model inventory
   chat-completions protocol; models requiring Responses, Anthropic, or Gemini
   transports are not falsely exposed as runnable.
 - `POST /api/chat` and `POST /api/runtime/run` accept an objective and stream
-  server-sent events.
+  server-sent events. `run_mode` is `fast`, `reasoned`, or `agent`; it changes
+  the bounded step budget and response-depth contract, never authority.
 - `GET|POST /api/sessions`, `PUT /api/sessions/:id/agent`,
   `GET /api/sessions/:id/messages`, and
   `GET /api/runs?session_id=:id` expose restart-persistent chat history and run
   projections.
+- `POST /api/sessions/:id/branches` forks immutable history before a named
+  message, which is the edit/regenerate primitive. `DELETE /api/sessions/:id`
+  removes the session-owned query projections and uploaded bytes after active
+  work stops; per-run canonical ledgers remain available for audit.
 - `GET|POST /api/sessions/:id/files` lists or ingests up to four files per
   request into that session. `DELETE /api/sessions/:id/files/:fileId` removes
   the projection and stored bytes. Public responses never expose storage paths.
@@ -116,6 +121,10 @@ credentials. `GET /api/models/:provider` discovers the live model inventory
   `/api/filesystem/content` expose a bounded, workspace-rooted universal file
   explorer. Session file `/preview` and `/content` routes provide typed views
   without disclosing backing storage paths.
+- Successful verified workspace mutations are projected as session artifacts.
+  They appear in `GET /api/sessions/:id/files`; artifact `/preview` and
+  `/content` routes re-resolve the workspace target and never trust a stored
+  absolute path.
 - Chat requests may contain bounded `linked_files` records. Workspace links are
   authorized-read hints; session links add provenance-linked chunks. Neither
   expands capability authority.
@@ -124,6 +133,10 @@ credentials. `GET /api/models/:provider` discovers the live model inventory
   `HYPER_AUTO_MAX_WALL_MS`; auto mode never bypasses approval or intent scope.
 - `POST /api/runs/:runId/approval` resolves a live proposal-scoped approval
   gate with `{ "approved": true | false }`.
+- `POST /api/runs/:runId/cancel` moves a live run through `cancelling` to a
+  canonical `cancelled` workflow receipt. Cancellation propagates into the
+  active model request; an action already across the effect boundary finishes
+  observation/reconciliation before the cancelled receipt is committed.
 - `GET /api/runs/:runId/events`, `/trail`, `/attribution`, and `/pass-metrics`
   expose canonical events, UI projection, provenance links, and bounded-pass
   measurements respectively.

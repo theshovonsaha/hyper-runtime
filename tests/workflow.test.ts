@@ -480,6 +480,34 @@ function correctionAwareModel(): ModelDriver {
 }
 
 describe('causal workflow and pivot control', () => {
+  test('commits an explicit cancelled receipt when a model request is aborted', async () => {
+    const controller = new AbortController();
+    const model: ModelDriver = {
+      async propose(_packet, _capabilities, _scope, signal) {
+        controller.abort();
+        signal?.throwIfAborted();
+        throw new Error('unreachable');
+      },
+    };
+    const registry = new CapabilityRegistry();
+    const runner = new WorkflowRunner({ model, capabilities: registry });
+    const result = await runner.run({
+      runId: 'run:cancelled-model',
+      intent: {
+        id: 'intent:cancelled-model', version: CONTRACT_VERSION, objective: 'Cancel this request.',
+        principals: ['agent:test'], authorizedCapabilities: [], authorizedResources: [], prohibitedEffects: [],
+        requiredConditionIds: [], requiredEvidence: [], riskBudget: 0, approvalAboveRisk: 0,
+        completionCriteria: ['The request is cancelled.'],
+      },
+      conditions: [], constraints: [], sources: [], initialStrategyId: 'strategy:start', signal: controller.signal,
+    });
+
+    expect(result).toMatchObject({ status: 'cancelled', reasonCodes: ['WORKFLOW_ABORTED_DURING_MODEL_REQUEST'] });
+    expect(runner.ledger.forRun(result.runId).at(-1)).toMatchObject({
+      type: 'workflow.receipt', payload: { status: 'cancelled' },
+    });
+  });
+
   test('diagnoses a failure, preserves it across a pivot, and completes from evidence', async () => {
     const fixture = workflowFixture([
       action('proposal:failed', 'strategy:direct', 'fail'),
@@ -970,11 +998,13 @@ describe('canonical model boundary', () => {
 
   test('gives a live model exact proposal scope and capability argument schemas', async () => {
     let system = '';
+    let user = '';
     const driver = new CanonicalModelDriver({
       id: 'test-provider',
       model: 'test-model',
       async generate(request) {
         system = request.system;
+        user = request.user;
         return {
           text: JSON.stringify({
             kind: 'ask',
@@ -1018,8 +1048,8 @@ describe('canonical model boundary', () => {
       activeStrategyId: 'strategy:scoped',
     });
 
-    expect(system).toContain('"intentId":"intent:scoped"');
-    expect(system).toContain('"principalId":"agent:scoped"');
+    expect(user).toContain('"intentId":"intent:scoped"');
+    expect(user).toContain('"principalId":"agent:scoped"');
     expect(system).toContain('"inputSchema":{"type":"object"');
     expect(system).toContain('let the deterministic policy decide');
     const manifestLines = system.split('\n').filter(line => line.startsWith('CAPABILITY_MANIFESTS_JSON '));
@@ -1030,6 +1060,7 @@ describe('canonical model boundary', () => {
       endpoint: 'test-provider',
       sessionIdentifier: null,
       messageCount: 2,
+      actualInputTokens: 1,
     });
     expect(result.requestAudit?.promptCharacters).toBeGreaterThan(0);
     expect(result.requestAudit?.toolSchemaCharacters).toBeGreaterThan(0);
@@ -1038,6 +1069,7 @@ describe('canonical model boundary', () => {
     expect(result.requestAudit?.promptHash).toHaveLength(64);
     expect(result.requestAudit?.systemHash).toHaveLength(64);
     expect(result.requestAudit?.contextHash).toHaveLength(64);
+    expect(result.requestAudit?.stablePrefixHash).toBe(result.requestAudit?.systemHash);
   });
 
   test('synthesizes a natural answer only from supplied verified evidence', async () => {

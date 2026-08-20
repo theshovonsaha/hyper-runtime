@@ -462,6 +462,13 @@ export interface CompletionAssessment {
 export interface ModelUsage {
   inputTokens: number;
   outputTokens: number;
+  /** Provider-observed prompt tokens served from a cache. */
+  cachedInputTokens?: number;
+  /** Provider-observed prompt tokens written into a cache. */
+  cacheWriteTokens?: number;
+  /** Provider-observed hidden reasoning tokens, when exposed by the API. */
+  reasoningTokens?: number;
+  totalTokens?: number;
   costUsd?: number;
   latencyMs: number;
 }
@@ -479,6 +486,11 @@ export interface ModelRequestAudit {
   promptHash: string;
   systemHash: string;
   contextHash: string;
+  /** Hash of the deliberately stable prefix used for provider prompt caching. */
+  stablePrefixHash?: string;
+  /** Actual provider count; absent before or when a provider omits usage. */
+  actualInputTokens?: number;
+  tokenEstimateError?: number;
 }
 
 export interface ModelProposalResult {
@@ -502,7 +514,7 @@ export interface WorkflowStepRecord {
 
 export interface WorkflowRunResult {
   runId: string;
-  status: 'completed' | 'needs_input' | 'needs_approval' | 'blocked' | 'step_limit';
+  status: 'completed' | 'needs_input' | 'needs_approval' | 'blocked' | 'step_limit' | 'cancelled';
   steps: WorkflowStepRecord[];
   activeStrategyId: string;
   completion?: CompletionAssessment;

@@ -44,6 +44,42 @@ afterEach(() => {
 });
 
 describe('practical CLI workflow', () => {
+  test('branches immutable prompt history, projects verified artifacts, and deletes session-owned projections', () => {
+    const root = temporaryRoot();
+    const store = new JsonOperatorStore(join(root, 'operator.json'));
+    store.ensureSession('session:source', now, 'Original prompt');
+    store.appendMessage('session:source', { id: 'message:one', role: 'user', content: 'First prompt', at: now });
+    store.appendMessage('session:source', { id: 'message:two', role: 'assistant', content: 'First answer', at: now });
+    store.appendMessage('session:source', { id: 'message:three', role: 'user', content: 'Prompt to edit', at: now });
+    store.recordRun({
+      id: 'run:source', sessionId: 'session:source', objective: 'Prompt to edit', status: 'completed',
+      profile: 'workspace', provider: 'scripted', startedAt: now, endedAt: now, evidenceRefs: [],
+    });
+    store.addArtifact({
+      id: 'artifact:source', sessionId: 'session:source', runId: 'run:source', proposalId: 'proposal:write',
+      capabilityId: 'workspace.file.write', target: 'workspace/report.md', name: 'report.md',
+      mediaType: 'text/markdown', sizeBytes: 12, sha256: 'abc', evidenceRefs: ['verification:write'],
+      createdAt: now, verified: true,
+    });
+
+    const branch = store.branchSession({
+      sourceSessionId: 'session:source', messageId: 'message:three', newSessionId: 'session:branch', now,
+    });
+    expect(branch).toMatchObject({
+      parentSessionId: 'session:source', branchedFromMessageId: 'message:three',
+      messages: [{ id: 'message:one' }, { id: 'message:two' }],
+    });
+    expect(store.messages('session:source')).toHaveLength(3);
+    expect(store.listArtifacts('session:source')).toEqual([expect.objectContaining({ id: 'artifact:source', verified: true })]);
+
+    const removed = store.deleteSession('session:source');
+    expect(removed).toMatchObject({ runIds: ['run:source'] });
+    expect(store.session('session:source')).toBeUndefined();
+    expect(store.listRuns('session:source')).toEqual([]);
+    expect(store.listArtifacts('session:source')).toEqual([]);
+    expect(store.session('session:branch')).toBeDefined();
+  });
+
   test('ingests session files and fuses semantic, temporal, relationship, and lexical retrieval without cross-session bleed', async () => {
     const root = temporaryRoot();
     const store = new JsonOperatorStore(join(root, 'operator.json'));
@@ -991,6 +1027,103 @@ describe('practical CLI workflow', () => {
     expect(((await rebuiltEvents.json()) as { events: Array<{ type: string }> }).events.some(
       event => event.type === 'memory.user_superseded',
     )).toBeTrue();
+  });
+
+  test('cancels an active HTTP model request through the durable run controller', async () => {
+    const root = temporaryRoot();
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'),
+      provider: 'ollama',
+      model: 'test-model',
+      allowedExecutables: [],
+      allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose(_packet, _capabilities, _scope, signal) {
+          await new Promise<void>((_resolve, reject) => {
+            if (signal?.aborted) reject(signal.reason);
+            else signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+          throw new Error('unreachable');
+        },
+      }),
+    });
+    const response = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Wait for cancellation.' }),
+    }));
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    const initial = new TextDecoder().decode(first.value);
+    const metaLine = initial.split('\n').find(line => line.startsWith('data: '));
+    const meta = JSON.parse(metaLine!.slice(6)) as { run_id: string; session_id: string };
+
+    const cancelled = await handler(new Request(
+      `http://runtime.local/api/runs/${encodeURIComponent(meta.run_id)}/cancel`,
+      { method: 'POST' },
+    ));
+    expect(cancelled.status).toBe(202);
+    expect(await cancelled.json()).toMatchObject({ run_id: meta.run_id, status: 'cancelling' });
+    while (!(await reader.read()).done) { /* drain terminal cancellation events */ }
+
+    const runs = await handler(new Request(`http://runtime.local/api/runs?session_id=${encodeURIComponent(meta.session_id)}`));
+    expect(await runs.json()).toMatchObject({ runs: [expect.objectContaining({ id: meta.run_id, status: 'cancelled' })] });
+    const events = readFileSync(join(root, 'ledgers', `${meta.run_id}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(events.at(-1)).toMatchObject({ type: 'operator.run_cancelled' });
+  });
+
+  test('projects a verified generated file into the session artifact viewer', async () => {
+    const root = temporaryRoot();
+    let step = 0;
+    const handler = createRuntimeHttpHandler({
+      port: 0, workspace: root, ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'), provider: 'ollama', model: 'test-model',
+      allowedExecutables: [], allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose(_packet, _capabilities, scope) {
+          step += 1;
+          return {
+            proposal: step === 1 ? {
+              kind: 'action', strategyId: scope.activeStrategyId,
+              hypothesis: 'A report can be written.', expectedObservation: 'The report is observed.',
+              action: {
+                id: 'proposal:artifact-write', intentId: scope.intentId, principalId: scope.principalId,
+                conditionIds: scope.requiredConditionIds, capabilityId: 'workspace.file.write',
+                target: 'workspace/generated-report.md', declaredEffects: ['state.write'], risk: 2,
+                expectedEvidence: scope.requiredEvidence, idempotencyKey: 'artifact-write:one',
+                args: { content: '# Verified report\n\nGenerated by the bounded runtime.\n' },
+              },
+            } : {
+              kind: 'complete', strategyId: scope.activeStrategyId, evidenceRefs: scope.requiredEvidence,
+            },
+            usage: { inputTokens: 1, outputTokens: 1, latencyMs: 1 }, model: 'test:artifact-driver',
+          };
+        },
+      }),
+    });
+    const response = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Create a verified report.', profile: 'workspace', run_mode: 'agent' }),
+    }));
+    const frames = (await response.text()).split('\n').filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6)) as Record<string, any>);
+    const meta = frames.find(frame => frame.kind === 'meta');
+    expect(meta).toBeDefined();
+    const sessionId = String(meta!.session_id);
+    expect(frames.some(frame => frame.event?.type === 'artifact.ready')).toBeTrue();
+
+    const files = await handler(new Request(`http://runtime.local/api/sessions/${encodeURIComponent(sessionId)}/files`));
+    const body = await files.json() as { artifacts: Array<{ id: string; target: string; verified: boolean }> };
+    expect(body.artifacts).toEqual([expect.objectContaining({ target: 'workspace/generated-report.md', verified: true })]);
+    const preview = await handler(new Request(
+      `http://runtime.local/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(body.artifacts[0]!.id)}/preview`,
+    ));
+    expect(await preview.json()).toMatchObject({
+      previewKind: 'markdown', content: '# Verified report\n\nGenerated by the bounded runtime.\n',
+      provenance: { proposalId: 'proposal:artifact-write' },
+    });
   });
 
   test('runs a persisted ping-pong provider/model schedule with automatic fallback', async () => {

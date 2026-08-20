@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 
 export interface OperatorMessage {
@@ -11,6 +12,48 @@ export interface OperatorMessage {
   caveats?: string[];
 }
 
+export interface SessionHistoryCompaction {
+  summary: string;
+  sourceMessageIds: string[];
+  retained: OperatorMessage[];
+  digest: string;
+  omittedCount: number;
+}
+
+/** Deterministic, provenance-preserving projection. The source messages remain
+ * canonical and the projection can be rebuilt or audited by digest. */
+export function compactSessionMessages(
+  messages: OperatorMessage[],
+  maxRecentMessages = 12,
+  maxRecentCharacters = 8_000,
+  maxSummaryCharacters = 4_000,
+): SessionHistoryCompaction {
+  const retained = messages.slice(-Math.max(1, maxRecentMessages));
+  while (
+    retained.length > 1
+    && retained.reduce((total, message) => total + message.content.length, 0) > maxRecentCharacters
+  ) retained.shift();
+  const retainedIds = new Set(retained.map(message => message.id));
+  const omitted = messages.filter(message => !retainedIds.has(message.id));
+  const entries = omitted.map(message =>
+    `${message.role === 'user' ? 'Operator' : 'Assistant'}: ${message.content.replace(/\s+/g, ' ').trim().slice(0, 280)}`,
+  );
+  let summary = entries.join('\n');
+  if (summary.length > maxSummaryCharacters) {
+    const head = summary.slice(0, Math.floor(maxSummaryCharacters / 2));
+    const tail = summary.slice(-Math.floor(maxSummaryCharacters / 2));
+    summary = `${head}\n… ${omitted.length} earlier messages compacted …\n${tail}`;
+  }
+  const sourceMessageIds = omitted.map(message => message.id);
+  return {
+    summary,
+    sourceMessageIds,
+    retained: retained.map(message => structuredClone(message)),
+    digest: createHash('sha256').update(JSON.stringify(omitted)).digest('hex'),
+    omittedCount: omitted.length,
+  };
+}
+
 export interface OperatorSession {
   id: string;
   title: string;
@@ -20,6 +63,8 @@ export interface OperatorSession {
   agent?: OperatorSessionAgent;
   embeddingProfileId?: string;
   embeddingLockedAt?: string;
+  parentSessionId?: string;
+  branchedFromMessageId?: string;
 }
 
 export interface OperatorSessionAgent {
@@ -29,6 +74,7 @@ export interface OperatorSessionAgent {
   profile?: string;
   provider?: string;
   model?: string;
+  reasoningEffort?: 'off' | 'low' | 'medium' | 'high' | 'max';
   routingMode?: 'fallback' | 'round_robin' | 'ping_pong' | 'ring' | 'ring_pair';
   fallbackProviders: string[];
   routingRoutes?: Array<{ provider: string; model: string }>;
@@ -52,6 +98,22 @@ export interface OperatorRun {
   labExperimentId?: string;
   labAgentId?: string;
   labModules?: string[];
+}
+
+export interface SessionArtifactRecord {
+  id: string;
+  sessionId: string;
+  runId: string;
+  proposalId: string;
+  capabilityId: string;
+  target: string;
+  name: string;
+  mediaType: string;
+  sizeBytes: number;
+  sha256: string;
+  evidenceRefs: string[];
+  createdAt: string;
+  verified: true;
 }
 
 export interface VerifiedMemoryRecord {
@@ -197,7 +259,7 @@ interface SessionSearchDocument extends Omit<SessionSearchResult, 'score'> {
 }
 
 interface OperatorState {
-  version: 4;
+  version: 5;
   sessions: OperatorSession[];
   runs: OperatorRun[];
   memory: VerifiedMemoryRecord[];
@@ -209,11 +271,12 @@ interface OperatorState {
   sessionFiles: SessionFileRecord[];
   knowledgeChunks: SessionKnowledgeChunk[];
   knowledgeEdges: SessionKnowledgeEdge[];
+  artifacts: SessionArtifactRecord[];
 }
 
 function initialState(): OperatorState {
   return {
-    version: 4,
+    version: 5,
     sessions: [],
     runs: [],
     memory: [],
@@ -225,6 +288,7 @@ function initialState(): OperatorState {
     sessionFiles: [],
     knowledgeChunks: [],
     knowledgeEdges: [],
+    artifacts: [],
   };
 }
 
@@ -313,10 +377,10 @@ function migratedSearchDocuments(candidate: Record<string, unknown>): SessionSea
 function loadState(value: unknown): OperatorState {
   if (typeof value !== 'object' || value === null) return initialState();
   const candidate = value as Record<string, unknown>;
-  if (![1, 2, 3, 4].includes(Number(candidate.version))) return initialState();
+  if (![1, 2, 3, 4, 5].includes(Number(candidate.version))) return initialState();
   const searchDocuments = migratedSearchDocuments(candidate);
   return {
-    version: 4,
+    version: 5,
     sessions: Array.isArray(candidate.sessions) ? candidate.sessions as OperatorSession[] : [],
     runs: Array.isArray(candidate.runs) ? candidate.runs as OperatorRun[] : [],
     memory: Array.isArray(candidate.memory) ? candidate.memory as VerifiedMemoryRecord[] : [],
@@ -332,6 +396,7 @@ function loadState(value: unknown): OperatorState {
     sessionFiles: Array.isArray(candidate.sessionFiles) ? candidate.sessionFiles as SessionFileRecord[] : [],
     knowledgeChunks: Array.isArray(candidate.knowledgeChunks) ? candidate.knowledgeChunks as SessionKnowledgeChunk[] : [],
     knowledgeEdges: Array.isArray(candidate.knowledgeEdges) ? candidate.knowledgeEdges as SessionKnowledgeEdge[] : [],
+    artifacts: Array.isArray(candidate.artifacts) ? candidate.artifacts as SessionArtifactRecord[] : [],
   };
 }
 
@@ -408,6 +473,73 @@ export class JsonOperatorStore {
     return structuredClone(this.state.sessions.find(item => item.id === sessionId)?.messages);
   }
 
+  branchSession(input: {
+    sourceSessionId: string;
+    messageId: string;
+    newSessionId: string;
+    now: string;
+  }): OperatorSession {
+    const source = this.state.sessions.find(item => item.id === input.sourceSessionId);
+    if (!source) throw new Error(`Unknown session ${input.sourceSessionId}.`);
+    const messageIndex = source.messages.findIndex(message => message.id === input.messageId);
+    if (messageIndex < 0) throw new Error(`Unknown message ${input.messageId}.`);
+    const priorMessages = source.messages.slice(0, messageIndex).map(message => structuredClone(message));
+    const session: OperatorSession = {
+      id: input.newSessionId,
+      title: source.title,
+      createdAt: input.now,
+      updatedAt: input.now,
+      messages: priorMessages,
+      parentSessionId: source.id,
+      branchedFromMessageId: input.messageId,
+      ...(source.agent ? { agent: structuredClone(source.agent) } : {}),
+      ...(source.embeddingProfileId ? { embeddingProfileId: source.embeddingProfileId } : {}),
+    };
+    this.state.sessions.unshift(session);
+    for (const message of priorMessages) this.indexDocument({
+      documentId: `${message.id}:branch:${input.newSessionId}`,
+      sessionId: input.newSessionId,
+      kind: 'message',
+      content: message.content,
+      provenance: [message.id, input.messageId, ...(message.runId ? [message.runId] : [])],
+      createdAt: message.at,
+      terms: terms(message.content),
+      active: true,
+    });
+    this.commit();
+    return structuredClone(session);
+  }
+
+  deleteSession(sessionId: string): {
+    session: OperatorSession;
+    files: SessionFileRecord[];
+    runIds: string[];
+  } | undefined {
+    const session = this.state.sessions.find(item => item.id === sessionId);
+    if (!session) return undefined;
+    const files = this.state.sessionFiles.filter(file => file.sessionId === sessionId);
+    const fileIds = new Set(files.map(file => file.id));
+    const chunkIds = new Set(this.state.knowledgeChunks
+      .filter(chunk => chunk.sessionId === sessionId || fileIds.has(chunk.documentId))
+      .map(chunk => chunk.id));
+    const runIds = this.state.runs.filter(run => run.sessionId === sessionId).map(run => run.id);
+    this.state.sessions = this.state.sessions.filter(item => item.id !== sessionId);
+    this.state.runs = this.state.runs.filter(run => run.sessionId !== sessionId);
+    this.state.memory = this.state.memory.filter(record => record.sessionId !== sessionId);
+    this.state.searchDocuments = this.state.searchDocuments.filter(document => document.sessionId !== sessionId);
+    this.state.searchIndex = rebuildSearchIndex(this.state.searchDocuments);
+    this.state.sessionFiles = this.state.sessionFiles.filter(file => file.sessionId !== sessionId);
+    this.state.knowledgeChunks = this.state.knowledgeChunks.filter(chunk => chunk.sessionId !== sessionId);
+    this.state.knowledgeEdges = this.state.knowledgeEdges.filter(edge =>
+      edge.sessionId !== sessionId
+      && !chunkIds.has(edge.sourceChunkId)
+      && !chunkIds.has(edge.targetChunkId),
+    );
+    this.state.artifacts = this.state.artifacts.filter(artifact => artifact.sessionId !== sessionId);
+    this.commit();
+    return { session: structuredClone(session), files: structuredClone(files), runIds };
+  }
+
   configureSessionAgent(sessionId: string, agent: OperatorSessionAgent): OperatorSessionAgent {
     const session = this.state.sessions.find(item => item.id === sessionId);
     if (!session) throw new Error(`Unknown session ${sessionId}.`);
@@ -432,6 +564,23 @@ export class JsonOperatorStore {
     if (index >= 0) this.state.runs[index] = structuredClone(run);
     else this.state.runs.unshift(structuredClone(run));
     this.commit();
+  }
+
+  addArtifact(record: SessionArtifactRecord): SessionArtifactRecord {
+    const existing = this.state.artifacts.find(item => item.id === record.id);
+    if (existing) return structuredClone(existing);
+    if (!this.state.sessions.some(session => session.id === record.sessionId)) {
+      throw new Error(`Unknown session ${record.sessionId}.`);
+    }
+    this.state.artifacts.unshift(structuredClone(record));
+    this.commit();
+    return structuredClone(record);
+  }
+
+  listArtifacts(sessionId: string): SessionArtifactRecord[] {
+    return structuredClone(this.state.artifacts
+      .filter(artifact => artifact.sessionId === sessionId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
   }
 
   listRuns(sessionId?: string): OperatorRun[] {

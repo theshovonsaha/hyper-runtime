@@ -664,7 +664,7 @@ export class WorkflowRunner {
         });
       }
       if (definition.signal?.aborted) {
-        return this.finish(definition.runId, 'blocked', steps, activeStrategyId, {
+        return this.finish(definition.runId, 'cancelled', steps, activeStrategyId, {
           reasonCodes: ['WORKFLOW_ABORTED'],
         });
       }
@@ -745,8 +745,14 @@ export class WorkflowRunner {
             riskBudget: definition.intent.riskBudget,
             activeStrategyId,
           },
+          definition.signal,
         );
       } catch (error) {
+        if (definition.signal?.aborted) {
+          return this.finish(definition.runId, 'cancelled', steps, activeStrategyId, {
+            reasonCodes: ['WORKFLOW_ABORTED_DURING_MODEL_REQUEST'],
+          });
+        }
         const reason = error instanceof Error ? error.message : String(error);
         this.ledger.append(definition.runId, 'model.proposal_failed', { step: stepNumber, reason });
         if (definition.intent.requiredEvidence.every(value => satisfiedEvidence.has(value))) {
@@ -815,6 +821,11 @@ export class WorkflowRunner {
       }
 
       const proposal = modelResult.proposal;
+      if (definition.signal?.aborted) {
+        return this.finish(definition.runId, 'cancelled', steps, activeStrategyId, {
+          reasonCodes: ['WORKFLOW_ABORTED_AFTER_MODEL_REQUEST'],
+        });
+      }
       consecutiveModelFailures = 0;
       this.ledger.append(definition.runId, 'model.proposed', {
         step: stepNumber,
@@ -1176,6 +1187,12 @@ export class WorkflowRunner {
         }
       }
       checkpoint(stepNumber + 1);
+
+      if (definition.signal?.aborted) {
+        return this.finish(definition.runId, 'cancelled', steps, activeStrategyId, {
+          reasonCodes: ['WORKFLOW_ABORTED_AFTER_ACTION_RECONCILIATION'],
+        });
+      }
 
       if (outcome.status === 'awaiting_approval') {
         return this.finish(definition.runId, 'needs_approval', steps, activeStrategyId, {

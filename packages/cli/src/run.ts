@@ -26,6 +26,8 @@ import {
   OpenAICompatibleTransport,
   ScriptedModelDriver,
   type ModelDriver,
+  type ModelRuntimeProfile,
+  type ReasoningEffort,
 } from '@hyper/model';
 import { HashChainLedger, JsonlLedgerStore, inspectReplay } from '@hyper/runtime';
 import { CapabilityRegistry, WorkflowRunner } from '@hyper/workflow';
@@ -64,6 +66,8 @@ export interface ModelSelectionOptions {
   apiKeyEnvironmentName?: string;
   environment?: Record<string, string | undefined>;
   modelTimeoutMs?: number;
+  reasoningEffort?: ReasoningEffort;
+  modelProfile?: ModelRuntimeProfile;
 }
 
 export interface RunCommandOptions extends ModelSelectionOptions {
@@ -119,7 +123,7 @@ export async function createModelDriver(options: ModelSelectionOptions): Promise
       options.baseUrl,
       fetch,
       options.modelTimeoutMs,
-    ));
+    ), { profile: options.modelProfile, reasoningEffort: options.reasoningEffort });
   }
   const baseUrl = options.provider === 'ollama'
     ? options.baseUrl ?? 'http://127.0.0.1:11434/v1'
@@ -131,7 +135,7 @@ export async function createModelDriver(options: ModelSelectionOptions): Promise
     baseUrl,
     fetch,
     options.modelTimeoutMs,
-  ));
+  ), { profile: options.modelProfile, reasoningEffort: options.reasoningEffort });
 }
 
 export async function runTask(options: RunCommandOptions): Promise<WorkflowRunResult> {
