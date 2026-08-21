@@ -1,0 +1,21 @@
+{
+  "benchmark": "Correction Grammar Ablation",
+  "version": "1.0",
+  "fixedNow": "2026-07-24T12:00:00.000Z",
+  "researchQuestion": "Can a human-authored failure-to-constraint rule change the next bounded pass and recover a deterministic failing workflow?",
+  "maxSteps": 3,
+  "rule": {
+    "id": "correction:injected-write-failure",
+    "triggerCodes": ["INJECTED_FAILURE"],
+    "instruction": "The previous write mechanism failed. Use a fresh applicable write behavior and verify the observed value before completion.",
+    "focusTags": ["workspace", "write-repair"],
+    "maxApplications": 1,
+    "expectedEffect": "The next write action reaches verified completion."
+  },
+  "expected": {
+    "baselineStatus": "step_limit",
+    "treatmentStatus": "completed",
+    "applicationCount": 1,
+    "assessment": "improved"
+  }
+}

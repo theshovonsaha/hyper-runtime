@@ -75,12 +75,17 @@ export interface Approval {
 export interface CapabilityManifest {
   id: string;
   version: string;
+  description?: string;
   effects: Effect[];
+  /** Effects every invocation necessarily performs and therefore must declare. */
+  requiredEffects?: Effect[];
   targetPatterns: string[];
   riskCeiling: RiskLevel;
   approval: 'never' | 'risk_based' | 'always';
   idempotent: boolean;
   verification: 'required' | 'optional';
+  /** Machine-readable arguments exposed to proposal-producing models. */
+  inputSchema?: JsonSchema;
 }
 
 export interface CapabilityGrant {
@@ -109,6 +114,40 @@ export interface CapabilityExecution {
   summary: string;
   evidence: EvidenceRef[];
   errorCode?: string;
+  effectState?: EffectState;
+  effectId?: string;
+  retrySafe?: boolean;
+  reconciliationRequired?: boolean;
+}
+
+export type EffectState =
+  | 'not_started'
+  | 'applied'
+  | 'not_applied'
+  | 'unknown'
+  | 'partially_applied'
+  | 'reconciled';
+
+export interface EffectReconciliation {
+  effectId: string;
+  state: Extract<EffectState, 'applied' | 'not_applied' | 'unknown' | 'partially_applied' | 'reconciled'>;
+  retrySafe: boolean;
+  summary: string;
+  evidence: EvidenceRef[];
+}
+
+/** Durable, argument-free description of an effect that may have crossed the
+ * execution boundary before its outcome was committed. Capability adapters
+ * may use it to inspect the environment after a process restart. */
+export interface InterruptedEffect {
+  runId: string;
+  proposalId: string;
+  capabilityId: string;
+  target: string;
+  idempotencyKey: string;
+  declaredEffects: Effect[];
+  idempotent: boolean;
+  preparedEventHash: string;
 }
 
 export interface Observation {
@@ -122,6 +161,11 @@ export interface VerificationResult {
   passed: boolean;
   reasonCodes: string[];
   evidence: EvidenceRef[];
+  /** Narrow claims this verifier has actually established. */
+  establishes?: string[];
+  /** Material facts this verifier does not establish. */
+  limitations?: string[];
+  verifierIds?: string[];
 }
 
 export interface LedgerEvent {
@@ -148,13 +192,18 @@ export interface ActionOutcome {
 
 export interface CapabilityAdapter<Args extends Record<string, unknown> = Record<string, unknown>> {
   readonly manifest: CapabilityManifest;
-  execute(proposal: ActionProposal<Args>, grant: CapabilityGrant): Promise<CapabilityExecution>;
+  execute(proposal: ActionProposal<Args>, grant: CapabilityGrant, signal?: AbortSignal): Promise<CapabilityExecution>;
   observe(proposal: ActionProposal<Args>): Promise<Observation>;
   verify(
     proposal: ActionProposal<Args>,
     execution: CapabilityExecution,
     observation: Observation,
   ): Promise<VerificationResult>;
+  reconcile?(
+    proposal: ActionProposal<Args>,
+    execution: CapabilityExecution,
+  ): Promise<EffectReconciliation>;
+  recoverInterrupted?(effect: InterruptedEffect): Promise<EffectReconciliation>;
 }
 
 export type WorkflowPhase =
@@ -200,6 +249,19 @@ export type ContextRecordStatus =
   | 'expired'
   | 'disputed';
 
+export type ContextRelationKind =
+  | 'supports'
+  | 'contradicts'
+  | 'depends_on'
+  | 'derived_from'
+  | 'supersedes';
+
+export interface ContextRelation {
+  kind: ContextRelationKind;
+  targetId: string;
+  evidenceRefs: string[];
+}
+
 export interface ContextRecord {
   id: string;
   tag: ContextTag;
@@ -212,6 +274,7 @@ export interface ContextRecord {
   priority: number;
   createdAt: string;
   searchTags: string[];
+  relations?: ContextRelation[];
   supersedes?: string;
   expiresAt?: string;
   rebuildable: boolean;
@@ -241,6 +304,7 @@ export interface ContextSource {
   confidence?: number;
   supersedes?: string;
   rebuildable?: boolean;
+  relations?: ContextRelation[];
 }
 
 export interface ContextPacketItem {
@@ -255,6 +319,38 @@ export interface ContextPacketItem {
   semanticTag?: ContextTag;
   confidence?: number;
   rebuildable?: boolean;
+  relations?: ContextRelation[];
+  /** Other non-authoritative sources represented by this exact-content item. */
+  collapsedSourceIds?: string[];
+}
+
+export type ContextExclusionReason =
+  | 'inactive'
+  | 'expired'
+  | 'irrelevant'
+  | 'duplicate'
+  | 'budget';
+
+export interface ContextPacketExclusion {
+  sourceId: string;
+  reason: ContextExclusionReason;
+  representedBySourceId?: string;
+}
+
+export interface ContextPacketAudit {
+  sourcesConsidered: number;
+  sourcesIncluded: number;
+  stableItems: number;
+  dynamicItems: number;
+  stableTokens: number;
+  dynamicTokens: number;
+  duplicateTokensRemoved: number;
+  budgetUtilization: number;
+  tokensByAuthority: Record<string, number>;
+  tokensBySemanticTag: Record<string, number>;
+  contradictionCount?: number;
+  unresolvedConflictIds?: string[];
+  provenanceCoverage?: number;
 }
 
 export interface ContextPacket {
@@ -267,6 +363,8 @@ export interface ContextPacket {
   focusTags: string[];
   items: ContextPacketItem[];
   excludedSourceIds: string[];
+  exclusions: ContextPacketExclusion[];
+  audit: ContextPacketAudit;
   estimatedTokens: number;
   tokenBudget: number;
   compiledAt: string;
@@ -331,6 +429,30 @@ export interface ProgressAssessment {
   repeatedFailureCount: number;
 }
 
+/**
+ * A human-authored, deterministic recovery rule. It does not learn or grant
+ * authority; it activates a bounded constraint after an observed failure.
+ */
+export interface CorrectionRule {
+  id: string;
+  triggerCodes: string[];
+  instruction: string;
+  focusTags: string[];
+  maxApplications: number;
+  expectedEffect: string;
+}
+
+export interface CorrectionAssessment {
+  ruleId: string;
+  triggeredByCausalId: string;
+  appliedAtStep: number;
+  assessedAtStep: number;
+  disposition: 'improved' | 'not_improved' | 'inconclusive';
+  expectedEffect: string;
+  observedActionStatus: ActionOutcome['status'];
+  observedFailureSignature?: string;
+}
+
 export interface CompletionAssessment {
   passed: boolean;
   reasonCodes: string[];
@@ -340,14 +462,42 @@ export interface CompletionAssessment {
 export interface ModelUsage {
   inputTokens: number;
   outputTokens: number;
+  /** Provider-observed prompt tokens served from a cache. */
+  cachedInputTokens?: number;
+  /** Provider-observed prompt tokens written into a cache. */
+  cacheWriteTokens?: number;
+  /** Provider-observed hidden reasoning tokens, when exposed by the API. */
+  reasoningTokens?: number;
+  totalTokens?: number;
   costUsd?: number;
   latencyMs: number;
+}
+
+export interface ModelRequestAudit {
+  requestId: string;
+  endpoint: string;
+  sessionIdentifier: string | null;
+  messageCount: number;
+  promptCharacters: number;
+  estimatedTokens: number;
+  toolSchemaCharacters: number;
+  systemCharacters: number;
+  contextCharacters: number;
+  promptHash: string;
+  systemHash: string;
+  contextHash: string;
+  /** Hash of the deliberately stable prefix used for provider prompt caching. */
+  stablePrefixHash?: string;
+  /** Actual provider count; absent before or when a provider omits usage. */
+  actualInputTokens?: number;
+  tokenEstimateError?: number;
 }
 
 export interface ModelProposalResult {
   proposal: WorkflowProposal;
   usage: ModelUsage;
   model: string;
+  requestAudit?: ModelRequestAudit;
 }
 
 export interface WorkflowStepRecord {
@@ -364,7 +514,7 @@ export interface WorkflowStepRecord {
 
 export interface WorkflowRunResult {
   runId: string;
-  status: 'completed' | 'needs_input' | 'needs_approval' | 'blocked' | 'step_limit';
+  status: 'completed' | 'needs_input' | 'needs_approval' | 'blocked' | 'step_limit' | 'cancelled';
   steps: WorkflowStepRecord[];
   activeStrategyId: string;
   completion?: CompletionAssessment;
@@ -434,6 +584,74 @@ export interface ExecutableWorkflowPlan {
   updatedAt: string;
 }
 
+export type WorkflowNode =
+  | { id: string; kind: 'action'; proposal: ActionProposal }
+  | { id: string; kind: 'deterministic'; adapterId: string; input: Record<string, unknown>; outputFact: string; outputSchema: JsonSchema }
+  | { id: string; kind: 'model'; operation: string; input: Record<string, unknown>; outputFact: string; outputSchema: JsonSchema }
+  | { id: string; kind: 'sequence'; children: WorkflowNode[] }
+  | { id: string; kind: 'parallel'; children: WorkflowNode[]; maxConcurrency: number }
+  | { id: string; kind: 'choice'; predicate: WorkflowPredicate; whenTrue: WorkflowNode; whenFalse?: WorkflowNode }
+  | { id: string; kind: 'loop'; predicate: WorkflowPredicate; maxIterations: number; body: WorkflowNode }
+  | { id: string; kind: 'gate'; reason: string; child: WorkflowNode }
+  | { id: string; kind: 'verify'; verifierIds: string[]; claims: string[] }
+  | { id: string; kind: 'subworkflow'; intent: IntentContract; child: WorkflowNode };
+
+export interface WorkflowPredicate {
+  fact: string;
+  operator: 'exists' | 'equals' | 'not_equals';
+  value?: unknown;
+}
+
+export interface ComposedWorkflowPlan {
+  id: string;
+  version: '1.0';
+  intent: IntentContract;
+  root: WorkflowNode;
+}
+
+export interface WorkflowNodeResult {
+  nodeId: string;
+  status: 'completed' | 'skipped' | 'blocked' | 'failed';
+  reasonCodes: string[];
+  evidence: EvidenceRef[];
+  actionOutcome?: ActionOutcome;
+}
+
+export interface SemanticVerificationRequest {
+  runId: string;
+  claims: string[];
+  observations: Observation[];
+  evidence: EvidenceRef[];
+  now: string;
+}
+
+export interface WorkflowCandidate {
+  id: string;
+  status: 'candidate' | 'ready' | 'rejected';
+  sourceRunIds: string[];
+  plan: ExecutableWorkflowPlan;
+  parameterSlots: string[];
+  confidence: number;
+  verifiedSourceOutcomes: number;
+  createdAt: string;
+}
+
+export interface WorkflowBacktestReport {
+  candidateId: string;
+  scenarioCount: number;
+  passed: number;
+  failed: number;
+  mutationsSurvived: number;
+  acceptancePassed: boolean;
+}
+
+export interface HumanWorkflowActivation {
+  candidateId: string;
+  principalId: string;
+  approvedAt: string;
+  receiptId: string;
+}
+
 export interface WorkflowArtifact {
   id: string;
   planId: string;
@@ -484,6 +702,17 @@ export interface DelegationBudgetUsage {
 export interface DelegationVerificationSpec {
   minimumEvidence: number;
   requireVerifiedCompletion: boolean;
+  receiptAttestation?: {
+    required: boolean;
+    trustedKeyIds: string[];
+  };
+}
+
+export interface ReceiptAttestation {
+  algorithm: 'Ed25519';
+  keyId: string;
+  payloadDigest: string;
+  signature: string;
 }
 
 export interface DelegationContract {
@@ -524,6 +753,7 @@ export interface DelegationResult {
   verificationPassed: boolean;
   budgetUsage: DelegationBudgetUsage;
   childReceiptHash?: string;
+  attestation?: ReceiptAttestation;
   failure?: StructuredFailure;
 }
 

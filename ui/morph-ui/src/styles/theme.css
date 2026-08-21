@@ -1,0 +1,195 @@
+/* morph-ui theme tokens — override any of these on a parent element to reskin
+   the whole library without touching component code. */
+:root {
+  --morph-bg: #08070c;
+  --morph-panel-bg: linear-gradient(180deg, #120e1c, #0a0810);
+  --morph-border: rgba(238, 233, 247, 0.09);
+  --morph-ink: #eee9f7;
+  --morph-ink-dim: #8d84a6;
+  --morph-accent: #8B5CF6;
+  --morph-accent-hover: #7c4de0;
+  --morph-cyan: #22D3EE;
+  --morph-lime: #A3E635;
+  --morph-coral: #FB7185;
+  --morph-radius: 22px;
+  --morph-font: 'Space Grotesk', system-ui, sans-serif;
+  --morph-mono: 'JetBrains Mono', monospace;
+}
+
+.morph-shape-path { transition: d 0.85s cubic-bezier(0.65,0,0.35,1), fill 0.7s ease; }
+
+.morph-panel-outer { overflow: hidden; transition: height 420ms cubic-bezier(.65,0,.35,1); }
+.morph-panel-inner { display: flex; flex-direction: column; }
+.morph-panel-view { animation: morph-enter-fwd 320ms cubic-bezier(.2,.7,.2,1); }
+.morph-panel-view.back { animation-name: morph-enter-back; }
+@keyframes morph-enter-fwd { from{ opacity:0; transform:translateX(14px);} to{ opacity:1; transform:translateX(0);} }
+@keyframes morph-enter-back { from{ opacity:0; transform:translateX(-14px);} to{ opacity:1; transform:translateX(0);} }
+
+.morph-bubble { max-width:82%; padding:9px 12px; border-radius:14px; font-size:13.5px; line-height:1.45; font-family:var(--morph-font); color:var(--morph-ink); }
+.morph-bubble.user { align-self:flex-end; background:var(--morph-accent); color:#fff; border-bottom-right-radius:4px; }
+.morph-bubble.assistant { align-self:flex-start; background:rgba(238,233,247,0.07); border:1px solid var(--morph-border); border-bottom-left-radius:4px; }
+
+.morph-toolchip { align-self:flex-start; display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:12px; background:rgba(34,211,238,0.08); border:1px solid rgba(34,211,238,0.25); cursor:pointer; font-size:12.5px; font-family:var(--morph-mono); color:#a9f0fb; transition: background 0.2s ease; }
+.morph-toolchip:hover { background:rgba(34,211,238,0.14); }
+.morph-chip-arrow { margin-left:auto; opacity:0.6; }
+.morph-status-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+.morph-status-dot.running { background:var(--morph-cyan); box-shadow:0 0 6px var(--morph-cyan); animation: morph-pulse 1s ease-in-out infinite; }
+.morph-status-dot.success { background:var(--morph-lime); box-shadow:0 0 6px var(--morph-lime); }
+.morph-status-dot.error { background:var(--morph-coral); box-shadow:0 0 6px var(--morph-coral); }
+@keyframes morph-pulse { 0%,100%{opacity:1;} 50%{opacity:0.35;} }
+
+.morph-tool-detail { padding:16px; display:flex; flex-direction:column; gap:14px; font-family:var(--morph-font); }
+.morph-status-banner { display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:14px; font-size:13px; font-weight:500; }
+.morph-status-banner.running { background:rgba(34,211,238,0.1); border:1px solid rgba(34,211,238,0.3); color:#a9f0fb; }
+.morph-status-banner.success { background:rgba(163,230,53,0.1); border:1px solid rgba(163,230,53,0.3); color:#d4f5a6; }
+.morph-status-banner.error { background:rgba(251,113,133,0.1); border:1px solid rgba(251,113,133,0.3); color:#fdc6cf; }
+.morph-spin { animation: morph-spin 1s linear infinite; }
+@keyframes morph-spin { to { transform: rotate(360deg); } }
+
+.morph-section-label { font-family:var(--morph-mono); font-size:10.5px; letter-spacing:0.1em; text-transform:uppercase; color:var(--morph-ink-dim); margin:0 0 6px; }
+.morph-code-block { background:#050408; border:1px solid var(--morph-border); border-radius:10px; padding:11px 12px; font-family:var(--morph-mono); font-size:12px; line-height:1.6; color:#c9c2df; white-space:pre-wrap; word-break:break-word; }
+.morph-skeleton { display:flex; flex-direction:column; gap:6px; }
+.morph-skel-line { height:9px; border-radius:5px; background:linear-gradient(90deg, rgba(238,233,247,0.06) 25%, rgba(238,233,247,0.14) 37%, rgba(238,233,247,0.06) 63%); background-size:400% 100%; animation: morph-shimmer 1.4s ease infinite; }
+@keyframes morph-shimmer { 0%{background-position:100% 0;} 100%{background-position:-100% 0;} }
+.morph-meta-row { display:flex; gap:16px; font-size:11.5px; color:var(--morph-ink-dim); font-family:var(--morph-mono); }
+
+.morph-history { padding:10px 16px 16px; display:flex; flex-direction:column; gap:6px; }
+.morph-history-row { display:flex; align-items:flex-start; gap:10px; padding:9px 10px; border-radius:10px; font-family:var(--morph-font); }
+.morph-history-row.clickable { cursor:pointer; transition: background 0.15s ease; }
+.morph-history-row.clickable:hover { background:rgba(238,233,247,0.06); }
+.morph-history-icon { width:22px; height:22px; border-radius:6px; flex-shrink:0; margin-top:1px; display:flex; align-items:center; justify-content:center; background:rgba(238,233,247,0.07); }
+.morph-history-text { font-size:12.5px; line-height:1.45; color:#c9c2df; flex:1; min-width:0; }
+.morph-history-role { font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:#6f6788; font-family:var(--morph-mono); margin-bottom:2px; }
+
+.morph-pill-btn { display:inline-flex; align-items:center; gap:6px; padding:7px 12px; border-radius:100px; background:rgba(238,233,247,0.06); border:1px solid var(--morph-border); color:#c9c2df; font-size:12px; cursor:pointer; font-family:var(--morph-font); transition: background 0.2s ease, color 0.2s ease; }
+.morph-pill-btn:hover { background:rgba(238,233,247,0.12); color:#fff; }
+.morph-pill-btn.primary { background:var(--morph-accent); border-color:var(--morph-accent); color:#fff; }
+.morph-pill-btn.primary:hover { background:var(--morph-accent-hover); }
+
+/* --- launch transition / input dock --------------------------------- */
+.morph-launch-overlay { position:absolute; inset:0; pointer-events:none; overflow:hidden; z-index:40; }
+.morph-launch-ghost { box-shadow: 0 0 24px rgba(139,92,246,0.5); }
+
+.morph-input-dock { display:flex; align-items:center; gap:8px; padding:12px 14px; border-top:1px solid var(--morph-border); transition: transform 260ms ease, opacity 260ms ease; }
+.morph-input-dock.launching { transform: scale(0.94); opacity:0.45; }
+.morph-input { flex:1; background:rgba(238,233,247,0.06); border:1px solid var(--morph-border); border-radius:12px; padding:9px 12px; color:var(--morph-ink); font-size:13.5px; font-family:var(--morph-font); outline:none; }
+.morph-input:focus { border-color:var(--morph-accent); }
+.morph-input:disabled { opacity:0.5; }
+.morph-send { width:34px; height:34px; border-radius:10px; background:var(--morph-accent); border:none; color:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; transition: background 0.2s ease, transform 0.15s ease; }
+.morph-send:hover { background:var(--morph-accent-hover); }
+.morph-send:disabled { opacity:0.4; cursor:not-allowed; }
+
+/* --- turn capsule ("high tech" inline processing element) ------------ */
+.morph-turn-capsule {
+  align-self:flex-start; max-width:100%;
+  display:flex; align-items:center; gap:9px;
+  padding:8px 12px; border-radius:14px;
+  background: rgba(139,92,246,0.06);
+  border:1px solid rgba(139,92,246,0.22);
+  cursor:pointer; position:relative; overflow:hidden;
+  transition: background 0.2s ease, border-color 0.3s ease;
+}
+.morph-turn-capsule.running { border-color: rgba(34,211,238,0.3); background: rgba(34,211,238,0.06); }
+.morph-turn-capsule.error { border-color: rgba(251,113,133,0.3); background: rgba(251,113,133,0.06); }
+.morph-turn-capsule:hover { background: rgba(139,92,246,0.1); }
+.morph-turn-avatar { flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+.morph-turn-body { flex:1; min-width:0; position:relative; }
+.morph-turn-ticker {
+  font-family: var(--morph-mono); font-size:11.5px; color:#a9f0fb;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;
+}
+.morph-turn-summary { font-family: var(--morph-font); font-size:12.5px; color: var(--morph-ink-dim); }
+.morph-turn-scan {
+  position:absolute; top:-8px; bottom:-8px; left:-40%; width:40%;
+  background: linear-gradient(90deg, transparent, rgba(34,211,238,0.18), transparent);
+  animation: morph-scan 1.6s linear infinite;
+  pointer-events:none;
+}
+@keyframes morph-scan { from{ left:-40%; } to{ left:120%; } }
+
+/* --- turn detail / timeline ------------------------------------------ */
+.morph-turn-detail { padding:16px; display:flex; flex-direction:column; gap:14px; font-family:var(--morph-font); }
+.morph-turn-timeline { display:flex; flex-direction:column; }
+.morph-turn-step { display:flex; gap:10px; }
+.morph-turn-step-rail { display:flex; flex-direction:column; align-items:center; width:14px; flex-shrink:0; }
+.morph-turn-step-dot { width:8px; height:8px; border-radius:50%; background:#6f6788; margin-top:6px; flex-shrink:0; }
+.morph-turn-step-dot.running { background:var(--morph-cyan); box-shadow:0 0 6px var(--morph-cyan); animation: morph-pulse 1s ease-in-out infinite; }
+.morph-turn-step-dot.success, .morph-turn-step-dot.done { background:var(--morph-lime); }
+.morph-turn-step-dot.error { background:var(--morph-coral); }
+.morph-turn-step-line { width:1px; flex:1; background: var(--morph-border); margin:2px 0; }
+.morph-turn-step-content { flex:1; min-width:0; padding-bottom:14px; }
+.morph-turn-reasoning { margin:4px 0; font-size:12.5px; line-height:1.5; color:var(--morph-ink-dim); font-style:italic; }
+
+/* --- DataView adapters ------------------------------------------------ */
+.morph-dv-image img { max-width:100%; border-radius:10px; border:1px solid var(--morph-border); }
+.morph-dv-link { color:#a9f0fb; font-family:var(--morph-mono); font-size:12px; word-break:break-all; }
+.morph-dv-empty { color:var(--morph-ink-dim); font-size:12px; font-style:italic; }
+.morph-dv-taglist { display:flex; flex-wrap:wrap; gap:6px; }
+.morph-dv-tag { padding:3px 9px; border-radius:100px; background:rgba(238,233,247,0.08); border:1px solid var(--morph-border); font-size:11.5px; font-family:var(--morph-mono); color:#c9c2df; }
+.morph-dv-prim.str { color:#d4f5a6; }
+.morph-dv-prim.num { color:#a9f0fb; }
+.morph-dv-prim.bool { color:#fbbf24; }
+.morph-dv-prim.null { color:#6f6788; }
+.morph-dv-prim { font-family:var(--morph-mono); font-size:12px; }
+
+.morph-dv-table-wrap { overflow-x:auto; border-radius:10px; border:1px solid var(--morph-border); }
+.morph-dv-table { width:100%; border-collapse:collapse; font-size:12px; font-family:var(--morph-mono); }
+.morph-dv-table th { text-align:left; padding:7px 10px; background:rgba(238,233,247,0.05); color:var(--morph-ink-dim); font-weight:500; border-bottom:1px solid var(--morph-border); white-space:nowrap; }
+.morph-dv-table td { padding:7px 10px; border-bottom:1px solid var(--morph-border); }
+.morph-dv-table tr:last-child td { border-bottom:none; }
+
+.morph-dv-statgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(84px, 1fr)); gap:8px; }
+.morph-dv-stat { background:rgba(238,233,247,0.05); border:1px solid var(--morph-border); border-radius:10px; padding:9px 10px; }
+.morph-dv-stat-value { font-family:var(--morph-mono); font-size:16px; color:#eee9f7; }
+.morph-dv-stat-label { font-size:10.5px; color:var(--morph-ink-dim); text-transform:uppercase; letter-spacing:0.05em; margin-top:2px; }
+
+.morph-dv-kv { display:flex; flex-direction:column; gap:5px; }
+.morph-dv-kv-row { display:flex; justify-content:space-between; gap:10px; font-size:12px; }
+.morph-dv-kv-key { color:var(--morph-ink-dim); font-family:var(--morph-mono); }
+
+.morph-dv-tree { font-size:12px; }
+.morph-dv-tree-toggle { cursor:pointer; color:var(--morph-ink-dim); font-family:var(--morph-mono); font-size:11px; margin-bottom:3px; }
+.morph-dv-tree-row { display:flex; gap:8px; padding:2px 0; align-items:flex-start; }
+
+/* --- recursive MorphNode: the self-similar collapsed<->expanded shape --- */
+.morph-node {
+  border-radius: 16px;
+  border: 1px solid var(--morph-border);
+  background: rgba(238,233,247,0.03);
+  overflow: hidden;
+  transition: border-radius 380ms cubic-bezier(.65,0,.35,1), background 300ms ease;
+}
+.morph-node.morph-outer-round { border-radius: 22px; background: rgba(139,92,246,0.05); }
+
+.morph-node-orb {
+  display:flex; align-items:center; gap:10px;
+  padding:9px 12px; cursor:pointer;
+  position:relative; overflow:hidden;
+}
+.morph-node-orb.running::before {
+  content:""; position:absolute; top:-8px; bottom:-8px; left:-40%; width:40%;
+  background: linear-gradient(90deg, transparent, rgba(34,211,238,0.16), transparent);
+  animation: morph-scan 1.6s linear infinite;
+}
+.morph-node-orb-text { flex:1; min-width:0; }
+.morph-node-orb-hint {
+  font-family: var(--morph-mono); font-size:11.5px; color:#a9f0fb;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;
+}
+
+.morph-node-tile { display:flex; align-items:center; gap:10px; padding:10px 12px; }
+.morph-node-tile.clickable { cursor:pointer; transition: background 0.15s ease; }
+.morph-node-tile.clickable:hover { background: rgba(238,233,247,0.05); }
+.morph-node-tile-dot { width:7px; height:7px; border-radius:50%; background:#6f6788; flex-shrink:0; }
+.morph-node-tile-dot.running { background:var(--morph-cyan); box-shadow:0 0 6px var(--morph-cyan); animation: morph-pulse 1s ease-in-out infinite; }
+.morph-node-tile-dot.done, .morph-node-tile-dot.success { background:var(--morph-lime); }
+.morph-node-tile-dot.error { background:var(--morph-coral); }
+.morph-node-tile-text { flex:1; min-width:0; display:flex; flex-direction:column; }
+.morph-node-tile-label { font-family:var(--morph-font); font-size:13px; color:var(--morph-ink); }
+.morph-node-tile-meta { font-family:var(--morph-mono); font-size:10.5px; color:var(--morph-ink-dim); margin-top:1px; }
+
+.morph-node-expanded { padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
+.morph-node-header { display:flex; align-items:center; gap:8px; font-family:var(--morph-font); font-size:12.5px; color:var(--morph-ink-dim); padding-bottom:2px; }
+.morph-node-collapse { width:24px; height:24px; border-radius:8px; background:rgba(238,233,247,0.06); border:1px solid var(--morph-border); color:var(--morph-ink); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
+.morph-node-collapse:hover { background:rgba(238,233,247,0.12); }
+.morph-node-children { display:flex; flex-direction:column; gap:6px; }

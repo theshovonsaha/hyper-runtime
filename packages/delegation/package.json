@@ -1,6 +1,9 @@
 {
   "name": "@hyper/delegation",
   "version": "0.2.0",
+  "license": "MIT",
+  "files": ["src"],
+  "publishConfig": { "access": "public" },
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

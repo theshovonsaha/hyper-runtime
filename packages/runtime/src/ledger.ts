@@ -5,6 +5,32 @@ import { dirname } from 'node:path';
 import { canonicalJson, sha256 } from './canonical';
 
 const GENESIS_HASH = '0'.repeat(64);
+const HASH_PATTERN = /^[a-f0-9]{64}$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseLedgerEvent(value: unknown, line: number): LedgerEvent {
+  if (
+    !isRecord(value)
+    || value.version !== CONTRACT_VERSION
+    || typeof value.runId !== 'string'
+    || value.runId.length === 0
+    || !Number.isSafeInteger(value.sequence)
+    || (value.sequence as number) < 0
+    || typeof value.type !== 'string'
+    || value.type.length === 0
+    || !isRecord(value.payload)
+    || typeof value.previousHash !== 'string'
+    || !HASH_PATTERN.test(value.previousHash)
+    || typeof value.hash !== 'string'
+    || !HASH_PATTERN.test(value.hash)
+  ) {
+    throw new Error(`Invalid ledger event schema at line ${line}.`);
+  }
+  return value as unknown as LedgerEvent;
+}
 
 export interface LedgerStore {
   load(): LedgerEvent[];
@@ -18,11 +44,11 @@ export class JsonlLedgerStore implements LedgerStore {
     if (!existsSync(this.path)) return [];
     const source = readFileSync(this.path, 'utf8').trim();
     if (!source) return [];
-    return source.split('\n').map((line, index) => {
+    return source.split('\n').map((entry, index) => {
       try {
-        return JSON.parse(line) as LedgerEvent;
+        return parseLedgerEvent(JSON.parse(entry), index + 1);
       } catch {
-        throw new Error(`Invalid ledger JSON at line ${index + 1}.`);
+        throw new Error(`Invalid ledger JSON or event schema at line ${index + 1}.`);
       }
     });
   }
@@ -45,22 +71,27 @@ export class HashChainLedger {
   }
 
   append(runId: string, type: string, payload: Record<string, unknown>): LedgerEvent {
+    if (!runId) throw new Error('Ledger events require a non-empty run ID.');
+    if (!type) throw new Error('Ledger events require a non-empty type.');
+    const committedPayload = structuredClone(payload);
     const previousHash = this.events.at(-1)?.hash ?? GENESIS_HASH;
     const unsigned = {
       version: CONTRACT_VERSION,
       runId,
       sequence: this.events.length,
       type,
-      payload,
+      payload: committedPayload,
       previousHash,
     };
     const event: LedgerEvent = {
       ...unsigned,
       hash: sha256(canonicalJson(unsigned)),
     };
-    this.events.push(event);
+    // Persist first so an I/O failure cannot leave the in-memory ledger ahead
+    // of its durable source of truth.
     this.store?.append(event);
-    return event;
+    this.events.push(event);
+    return structuredClone(event);
   }
 
   all(): readonly LedgerEvent[] {
@@ -69,6 +100,16 @@ export class HashChainLedger {
 
   latestHash(): string {
     return this.events.at(-1)?.hash ?? GENESIS_HASH;
+  }
+
+  hasRun(runId: string): boolean {
+    return this.events.some(event => event.runId === runId);
+  }
+
+  forRun(runId: string): readonly LedgerEvent[] {
+    return this.events
+      .filter(event => event.runId === runId)
+      .map(event => structuredClone(event));
   }
 
   verifyIntegrity(): { valid: boolean; brokenAt?: number } {
@@ -100,6 +141,15 @@ export interface ReplaySummary {
   runIds: string[];
   eventTypes: Record<string, number>;
   latestHash: string;
+  runs: Array<{
+    runId: string;
+    eventCount: number;
+    firstSequence: number;
+    lastSequence: number;
+    latestHash: string;
+    status?: string;
+    receiptHash?: string;
+  }>;
   brokenAt?: number;
 }
 
@@ -110,12 +160,31 @@ export function inspectReplay(ledger: HashChainLedger): ReplaySummary {
   for (const event of events) {
     eventTypes[event.type] = (eventTypes[event.type] ?? 0) + 1;
   }
+  const runs = [...new Set(events.map(event => event.runId))].map(runId => {
+    const runEvents = events.filter(event => event.runId === runId);
+    const receipt = [...runEvents].reverse().find(event =>
+      event.type === 'workflow.receipt' || event.type === 'action.receipt',
+    );
+    const status = typeof receipt?.payload.status === 'string'
+      ? receipt.payload.status
+      : undefined;
+    return {
+      runId,
+      eventCount: runEvents.length,
+      firstSequence: runEvents[0]!.sequence,
+      lastSequence: runEvents.at(-1)!.sequence,
+      latestHash: runEvents.at(-1)!.hash,
+      status,
+      receiptHash: receipt?.hash,
+    };
+  });
   return {
     valid: integrity.valid,
     eventCount: events.length,
     runIds: [...new Set(events.map(event => event.runId))],
     eventTypes,
     latestHash: ledger.latestHash(),
+    runs,
     brokenAt: integrity.brokenAt,
   };
 }

@@ -7,8 +7,10 @@ import type {
   DelegationResult,
   IntentContract,
   JsonSchema,
+  ReceiptAttestation,
   StructuredFailure,
 } from '@hyper/contracts';
+import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 
 export interface DelegationPolicyInput {
   parentIntent: IntentContract;
@@ -37,6 +39,104 @@ export interface ExecuteDelegationInput
   parentContext: ContextSource[];
   executor: ChildRuntimeExecutor;
   events?: DelegationEventSink;
+  budgetPool?: DelegationBudgetPool;
+  receiptKeyring?: Readonly<Record<string, string>>;
+}
+
+export interface BudgetReservation {
+  id: string;
+  budget: DelegationBudget;
+}
+
+export class DelegationBudgetPool {
+  private available: DelegationBudget;
+  private readonly reservations = new Map<string, DelegationBudget>();
+
+  constructor(total: DelegationBudget) {
+    if (!budgetValid(total)) throw new Error('Delegation budget pool requires a positive integer budget.');
+    this.available = structuredClone(total);
+  }
+
+  reserve(id: string, budget: DelegationBudget): { accepted: boolean; reasonCodes: string[] } {
+    if (!id || this.reservations.has(id)) return { accepted: false, reasonCodes: ['BUDGET_RESERVATION_ID_CONFLICT'] };
+    if (!budgetValid(budget)) return { accepted: false, reasonCodes: ['DELEGATION_BUDGET_INVALID'] };
+    const reasons = [
+      ...(budget.tokenBudget > this.available.tokenBudget ? ['TOKEN_BUDGET_NOT_AVAILABLE'] : []),
+      ...(budget.actionBudget > this.available.actionBudget ? ['ACTION_BUDGET_NOT_AVAILABLE'] : []),
+      ...(budget.wallTimeMs > this.available.wallTimeMs ? ['TIME_BUDGET_NOT_AVAILABLE'] : []),
+    ];
+    if (reasons.length > 0) return { accepted: false, reasonCodes: reasons };
+    this.available.tokenBudget -= budget.tokenBudget;
+    this.available.actionBudget -= budget.actionBudget;
+    this.available.wallTimeMs -= budget.wallTimeMs;
+    this.reservations.set(id, structuredClone(budget));
+    return { accepted: true, reasonCodes: ['BUDGET_RESERVED_ATOMICALLY'] };
+  }
+
+  settle(id: string, usage: DelegationResult['budgetUsage']): void {
+    const reserved = this.reservations.get(id);
+    if (!reserved) throw new Error(`Unknown budget reservation ${id}.`);
+    const bounded = (value: number, maximum: number) =>
+      Number.isFinite(value) && value >= 0 ? Math.min(maximum, Math.floor(value)) : maximum;
+    const usedTokens = bounded(usage.inputTokens + usage.outputTokens, reserved.tokenBudget);
+    const usedActions = bounded(usage.actions, reserved.actionBudget);
+    const usedTime = bounded(usage.wallTimeMs, reserved.wallTimeMs);
+    this.available.tokenBudget += reserved.tokenBudget - usedTokens;
+    this.available.actionBudget += reserved.actionBudget - usedActions;
+    this.available.wallTimeMs += reserved.wallTimeMs - usedTime;
+    this.reservations.delete(id);
+  }
+
+  release(id: string): void {
+    const reserved = this.reservations.get(id);
+    if (!reserved) return;
+    this.available.tokenBudget += reserved.tokenBudget;
+    this.available.actionBudget += reserved.actionBudget;
+    this.available.wallTimeMs += reserved.wallTimeMs;
+    this.reservations.delete(id);
+  }
+
+  remaining(): DelegationBudget {
+    return structuredClone(this.available);
+  }
+}
+
+export interface IsolatedChildWorker {
+  result: Promise<DelegationResult>;
+  terminate(reason: string): Promise<void>;
+}
+
+export interface IsolatedChildWorkerFactory {
+  start(request: ChildRuntimeRequest): IsolatedChildWorker;
+}
+
+/** Requires a worker with a real termination primitive; abort is not treated
+ * as cancellation until terminate() has completed. */
+export class CancellableChildWorkerExecutor implements ChildRuntimeExecutor {
+  constructor(private readonly factory: IsolatedChildWorkerFactory) {}
+
+  async run(request: ChildRuntimeRequest): Promise<DelegationResult> {
+    const worker = this.factory.start(request);
+    if (request.signal.aborted) {
+      await worker.terminate('aborted-before-start');
+      throw new Error('CHILD_WORKER_ABORTED');
+    }
+    let abortReject: ((reason: Error) => void) | undefined;
+    const aborted = new Promise<DelegationResult>((_resolve, reject) => {
+      abortReject = reject;
+    });
+    const onAbort = () => {
+      void worker.terminate('wall-time-or-parent-abort').then(() => {
+        abortReject?.(new Error('CHILD_WORKER_TERMINATED'));
+      }, error => abortReject?.(error instanceof Error ? error : new Error(String(error))));
+    };
+    request.signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      return await Promise.race([worker.result, aborted]);
+    } finally {
+      request.signal.removeEventListener('abort', onAbort);
+    }
+  }
 }
 
 function recursivePrefix(pattern: string): string | undefined {
@@ -198,11 +298,74 @@ export function validateJsonSchema(
   return { valid: errors.length === 0, errors };
 }
 
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${canonical(object[key])}`).join(',')}}`;
+}
+
+function attestationPayload(result: DelegationResult): string {
+  const { attestation: _attestation, ...unsigned } = result;
+  return canonical(unsigned);
+}
+
+export function signDelegationResult(
+  result: DelegationResult,
+  input: { keyId: string; privateKeyPem: string },
+): DelegationResult {
+  const payload = attestationPayload(result);
+  const payloadDigest = createHash('sha256').update(payload).digest('hex');
+  const signature = sign(null, Buffer.from(payload), createPrivateKey(input.privateKeyPem)).toString('base64url');
+  const attestation: ReceiptAttestation = {
+    algorithm: 'Ed25519',
+    keyId: input.keyId,
+    payloadDigest,
+    signature,
+  };
+  return { ...structuredClone(result), attestation };
+}
+
+export function verifyDelegationResultAttestation(
+  result: DelegationResult,
+  keyring: Readonly<Record<string, string>>,
+): string[] {
+  const attestation = result.attestation;
+  if (!attestation) return ['CHILD_RECEIPT_ATTESTATION_MISSING'];
+  if (attestation.algorithm !== 'Ed25519') return ['CHILD_RECEIPT_ATTESTATION_ALGORITHM_UNSUPPORTED'];
+  const publicKey = keyring[attestation.keyId];
+  if (!publicKey) return ['CHILD_RECEIPT_ATTESTATION_KEY_UNTRUSTED'];
+  const payload = attestationPayload(result);
+  const digest = createHash('sha256').update(payload).digest('hex');
+  if (digest !== attestation.payloadDigest) return ['CHILD_RECEIPT_ATTESTATION_DIGEST_MISMATCH'];
+  try {
+    return verify(
+      null,
+      Buffer.from(payload),
+      createPublicKey(publicKey),
+      Buffer.from(attestation.signature, 'base64url'),
+    ) ? [] : ['CHILD_RECEIPT_ATTESTATION_INVALID'];
+  } catch {
+    return ['CHILD_RECEIPT_ATTESTATION_INVALID'];
+  }
+}
+
 export function validateDelegationResult(
   contract: DelegationContract,
   result: DelegationResult,
+  receiptKeyring: Readonly<Record<string, string>> = {},
 ): string[] {
   const reasons: string[] = [];
+  if ([
+    result.budgetUsage.inputTokens,
+    result.budgetUsage.outputTokens,
+    result.budgetUsage.actions,
+  ].some(value => !Number.isFinite(value) || value < 0 || !Number.isInteger(value))) {
+    reasons.push('CHILD_BUDGET_USAGE_INVALID');
+  }
+  if (!Number.isFinite(result.budgetUsage.wallTimeMs) || result.budgetUsage.wallTimeMs < 0) {
+    reasons.push('CHILD_BUDGET_USAGE_INVALID');
+  }
   if (result.delegationId !== contract.id) reasons.push('DELEGATION_ID_MISMATCH');
   if (result.childRunId !== contract.childRunId) reasons.push('CHILD_RUN_ID_MISMATCH');
   if (
@@ -226,6 +389,14 @@ export function validateDelegationResult(
     reasons.push('CHILD_EVIDENCE_INSUFFICIENT');
   }
   if (!result.childReceiptHash) reasons.push('CHILD_RECEIPT_MISSING');
+  const attestation = contract.verification.receiptAttestation;
+  if (attestation?.required) {
+    if (result.attestation && !attestation.trustedKeyIds.includes(result.attestation.keyId)) {
+      reasons.push('CHILD_RECEIPT_ATTESTATION_KEY_OUTSIDE_CONTRACT');
+    } else {
+      reasons.push(...verifyDelegationResultAttestation(result, receiptKeyring));
+    }
+  }
   if (result.status === 'completed') {
     const schema = validateJsonSchema(contract.expectedOutputSchema, result.output);
     reasons.push(...schema.errors.map(error => `CHILD_OUTPUT_SCHEMA:${error}`));
@@ -301,6 +472,34 @@ export class DelegationController {
       };
     }
 
+    const reservation = input.budgetPool?.reserve(contract.id, contract.budget);
+    if (reservation && !reservation.accepted) {
+      const result = failedResult(contract, invalidDelegationFailure(reservation.reasonCodes));
+      const receipt = events?.append(contract.parentRunId, 'delegation.receipt', {
+        delegationId: contract.id,
+        authorized: false,
+        accepted: false,
+        reasonCodes: reservation.reasonCodes,
+      });
+      return {
+        delegationId: contract.id,
+        parentRunId: contract.parentRunId,
+        childRunId: contract.childRunId,
+        authorized: false,
+        accepted: false,
+        reasonCodes: reservation.reasonCodes,
+        result,
+        parentReceiptHash: receipt?.hash,
+      };
+    }
+    if (reservation?.accepted) {
+      events?.append(contract.parentRunId, 'delegation.budget_reserved', {
+        delegationId: contract.id,
+        budget: contract.budget,
+        remaining: input.budgetPool?.remaining(),
+      });
+    }
+
     const references = new Set(contract.contextRefs);
     const context = input.parentContext
       .filter(source => references.has(source.id))
@@ -356,6 +555,15 @@ export class DelegationController {
       if (timeout) clearTimeout(timeout);
     }
 
+    if (reservation?.accepted) {
+      input.budgetPool?.settle(contract.id, result.budgetUsage);
+      events?.append(contract.parentRunId, 'delegation.budget_settled', {
+        delegationId: contract.id,
+        usage: result.budgetUsage,
+        remaining: input.budgetPool?.remaining(),
+      });
+    }
+
     events?.append(contract.parentRunId, 'child_result.received', {
       delegationId: contract.id,
       childRunId: contract.childRunId,
@@ -363,7 +571,7 @@ export class DelegationController {
       evidenceRefs: result.evidenceRefs,
       childReceiptHash: result.childReceiptHash,
     });
-    const validationReasons = validateDelegationResult(contract, result);
+    const validationReasons = validateDelegationResult(contract, result, input.receiptKeyring);
     const accepted = validationReasons.length === 0;
     events?.append(contract.parentRunId, 'child_evidence.validated', {
       delegationId: contract.id,

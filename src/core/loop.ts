@@ -77,7 +77,10 @@ export interface LoopState {
   stagnantStrikes: number;
   prevAutoDraft: string;
   degraded: boolean;
-  usageTotal: { input_tokens: number; output_tokens: number };
+  usageTotal: {
+    prompt_tokens: number;
+    completion_tokens: number; input_tokens: number; output_tokens: number 
+};
   /**
    * Structured record of every tool invocation this run made (name + outcome +
    * whether it was served from cache). Previously nothing captured this in a

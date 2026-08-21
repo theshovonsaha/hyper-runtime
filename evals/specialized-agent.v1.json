@@ -1,0 +1,13 @@
+{
+  "benchmark": "verified-workspace-agent",
+  "version": "1.0",
+  "domain": "bounded workspace state transition",
+  "seeds": ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"],
+  "mutations": [
+    { "fault": "none", "expectedStatus": "completed", "requiredEvents": ["policy.decided", "action.verified"], "forbiddenEvents": [] },
+    { "fault": "false_success", "expectedStatus": "verification_failed", "requiredEvents": ["state.observed", "action.verified"], "forbiddenEvents": [] },
+    { "fault": "stale_observation", "expectedStatus": "verification_failed", "requiredEvents": ["state.observed", "action.verified"], "forbiddenEvents": [] },
+    { "fault": "throw", "expectedStatus": "execution_failed", "requiredEvents": ["capability.execution_failed", "action.executed"], "forbiddenEvents": ["state.observed"] },
+    { "fault": "partial_effect", "expectedStatus": "execution_failed", "requiredEvents": ["effect.reconciled", "action.executed"], "forbiddenEvents": ["state.observed"] }
+  ]
+}

@@ -6,6 +6,8 @@ import type {
   CapabilityExecution,
   CapabilityGrant,
   CapabilityManifest,
+  EffectReconciliation,
+  InterruptedEffect,
   Observation,
   VerificationResult,
 } from '@hyper/contracts';
@@ -32,11 +34,20 @@ export class ReadFileCapability implements CapabilityAdapter<FileReadArgs> {
     id: 'workspace.file.read',
     version: '0.2.0',
     effects: ['state.read'],
+    requiredEffects: ['state.read'],
     targetPatterns: ['workspace/**'],
     riskCeiling: 2,
     approval: 'never',
     idempotent: true,
     verification: 'required',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        expectedSha256: { type: 'string' },
+        maxBytes: { type: 'integer' },
+      },
+      additionalProperties: false,
+    },
   };
 
   private readonly resolver: WorkspaceTargetResolver;
@@ -129,11 +140,21 @@ export class WriteFileCapability implements CapabilityAdapter<FileWriteArgs> {
     id: 'workspace.file.write',
     version: '0.2.0',
     effects: ['state.write'],
+    requiredEffects: ['state.write'],
     targetPatterns: ['workspace/**'],
     riskCeiling: 4,
     approval: 'risk_based',
     idempotent: true,
     verification: 'required',
+    inputSchema: {
+      type: 'object',
+      required: ['content'],
+      properties: {
+        content: { type: 'string' },
+        expectedPreviousSha256: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
   };
 
   private readonly resolver: WorkspaceTargetResolver;
@@ -240,5 +261,59 @@ export class WriteFileCapability implements CapabilityAdapter<FileWriteArgs> {
       reasonCodes: passed ? ['FILE_CONTENT_OBSERVED'] : ['FILE_CONTENT_MISMATCH'],
       evidence: observation.evidence,
     };
+  }
+
+  async recoverInterrupted(effect: InterruptedEffect): Promise<EffectReconciliation> {
+    const path = this.resolver.resolve(effect.target, true);
+    const temporary = `${path}.hyper-${digest(effect.proposalId).slice(0, 12)}.tmp`;
+    try {
+      const staged = await readFile(temporary);
+      await mkdir(dirname(path), { recursive: true });
+      await rename(temporary, path);
+      const contentDigest = digest(staged);
+      return {
+        effectId: effect.idempotencyKey,
+        state: 'reconciled',
+        retrySafe: true,
+        summary: 'Recovered the prepared atomic file replacement without repeating the write.',
+        evidence: [{
+          id: `recovery:${effect.proposalId}`,
+          kind: 'observation',
+          source: this.manifest.id,
+          digest: contentDigest,
+        }],
+      };
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    }
+    try {
+      const content = await readFile(path);
+      return {
+        effectId: effect.idempotencyKey,
+        state: 'applied',
+        retrySafe: true,
+        summary: 'The target exists; the interrupted write is treated as applied but not task-complete.',
+        evidence: [{
+          id: `recovery:${effect.proposalId}`,
+          kind: 'observation',
+          source: this.manifest.id,
+          digest: digest(content),
+        }],
+      };
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+      return {
+        effectId: effect.idempotencyKey,
+        state: 'not_applied',
+        retrySafe: true,
+        summary: 'No staged file or target was found; a fresh authorized proposal may retry.',
+        evidence: [{
+          id: `recovery:${effect.proposalId}`,
+          kind: 'observation',
+          source: this.manifest.id,
+          digest: digest({ target: effect.target, exists: false }),
+        }],
+      };
+    }
   }
 }

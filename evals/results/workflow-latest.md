@@ -1,8 +1,8 @@
-# Adaptive Context and Workflow Evals v1.0.0
+# Adaptive Context and Workflow Evals v1.1.0
 
 **Research question:** Does phase-specific context curation preserve authoritative constraints and isolate stale or untrusted material, while causal workflow control rejects false completion and recovers through bounded pivots?
 
-This is a deterministic mechanism benchmark with 4 context fixtures, 3 workflow fixtures, and zero model calls.
+This is a deterministic mechanism benchmark with 5 context fixtures, 3 workflow fixtures, and zero model calls.
 
 | Metric | Result |
 |---|---:|

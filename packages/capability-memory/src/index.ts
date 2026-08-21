@@ -28,6 +28,15 @@ export class InMemoryWorkspaceCapability implements CapabilityAdapter<MemoryWrit
     approval: 'risk_based' as const,
     idempotent: true,
     verification: 'required' as const,
+    inputSchema: {
+      type: 'object',
+      required: ['value'],
+      properties: {
+        value: { type: 'string' },
+        behavior: { type: 'string', enum: ['apply', 'false_success', 'fail'] },
+      },
+      additionalProperties: false,
+    },
   };
 
   private readonly state = new Map<string, string>();

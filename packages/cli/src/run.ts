@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
   AllowlistedEnvironmentCredentialProvider,
@@ -10,8 +11,10 @@ import {
 import type {
   Condition,
   ContextSource,
+  CorrectionRule,
   Effect,
   IntentContract,
+  Approval,
   RiskLevel,
   WorkflowProposal,
   WorkflowRunResult,
@@ -23,13 +26,16 @@ import {
   OpenAICompatibleTransport,
   ScriptedModelDriver,
   type ModelDriver,
+  type ModelRuntimeProfile,
+  type ReasoningEffort,
+  type OpenAICompatibleDialect,
 } from '@hyper/model';
 import { HashChainLedger, JsonlLedgerStore, inspectReplay } from '@hyper/runtime';
 import { CapabilityRegistry, WorkflowRunner } from '@hyper/workflow';
 
 export interface HyperTaskFile {
   version: '0.2.0';
-  runId: string;
+  runId?: string;
   intentId: string;
   objective: string;
   principalId: string;
@@ -49,23 +55,50 @@ export interface HyperTaskFile {
   maxSteps?: number;
   allowedExecutables?: string[];
   httpAllowedHosts?: string[];
+  approvals?: Approval[];
+  correctionRules?: CorrectionRule[];
 }
 
-export interface RunCommandOptions {
-  taskPath: string;
-  workspace: string;
-  ledgerPath: string;
-  provider: 'scripted' | 'openai-compatible' | 'anthropic';
+export interface ModelSelectionOptions {
+  provider: 'scripted' | 'openai-compatible' | 'anthropic' | 'ollama';
   proposalsPath?: string;
   model?: string;
   baseUrl?: string;
   apiKeyEnvironmentName?: string;
   environment?: Record<string, string | undefined>;
+  modelTimeoutMs?: number;
+  reasoningEffort?: ReasoningEffort;
+  modelProfile?: ModelRuntimeProfile;
+  providerDialect?: OpenAICompatibleDialect;
+}
+
+export interface RunCommandOptions extends ModelSelectionOptions {
+  taskPath: string;
+  workspace: string;
+  ledgerPath: string;
+  runId?: string;
   now?: () => string;
 }
 
 function loadJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, 'utf8')) as T;
+}
+
+function inferredDialect(options: ModelSelectionOptions): OpenAICompatibleDialect {
+  if (options.providerDialect) return options.providerDialect;
+  if (options.provider === 'ollama') return 'ollama';
+  const base = (options.baseUrl ?? '').toLowerCase();
+  if (base.includes('generativelanguage.googleapis.com')) return 'gemini';
+  if (base.includes('api.groq.com')) return 'groq';
+  if (base.includes('api.deepseek.com')) return 'deepseek';
+  if (base.includes('api.mistral.ai')) return 'mistral';
+  if (base.includes('nvidia.com')) return 'nvidia';
+  if (base.includes('opencode.ai')) return 'opencode';
+  if (base.includes('openrouter.ai')) return 'openrouter';
+  if (base.includes('1234')) return 'lmstudio';
+  if (base.includes('8080')) return 'llamacpp';
+  if (base.includes('api.openai.com')) return 'openai';
+  return 'generic';
 }
 
 function taskIntent(task: HyperTaskFile): IntentContract {
@@ -85,40 +118,50 @@ function taskIntent(task: HyperTaskFile): IntentContract {
   };
 }
 
-async function modelFor(options: RunCommandOptions): Promise<ModelDriver> {
+export async function createModelDriver(options: ModelSelectionOptions): Promise<ModelDriver> {
   if (options.provider === 'scripted') {
     if (!options.proposalsPath) throw new Error('--proposals is required for scripted runs.');
     return new ScriptedModelDriver(loadJson<WorkflowProposal[]>(resolve(options.proposalsPath)));
   }
   if (!options.model) throw new Error('--model is required for live-provider runs.');
-  if (!options.apiKeyEnvironmentName) {
-    throw new Error('--api-key-env is required for live-provider runs.');
+  let apiKey: string | undefined;
+  if (options.apiKeyEnvironmentName) {
+    const credentials = new AllowlistedEnvironmentCredentialProvider(
+      [options.apiKeyEnvironmentName],
+      options.environment ?? process.env,
+    );
+    apiKey = await credentials.get(options.apiKeyEnvironmentName);
+    if (!apiKey) throw new Error(`Credential ${options.apiKeyEnvironmentName} is unavailable.`);
   }
-  const credentials = new AllowlistedEnvironmentCredentialProvider(
-    [options.apiKeyEnvironmentName],
-    options.environment ?? process.env,
-  );
-  const apiKey = await credentials.get(options.apiKeyEnvironmentName);
-  if (!apiKey) throw new Error(`Credential ${options.apiKeyEnvironmentName} is unavailable.`);
 
   if (options.provider === 'anthropic') {
+    if (!apiKey) throw new Error('--api-key-env is required for Anthropic runs.');
     return new CanonicalModelDriver(new AnthropicMessagesTransport(
       options.model,
       apiKey,
       options.baseUrl,
-    ));
+      fetch,
+      options.modelTimeoutMs,
+    ), { profile: options.modelProfile, reasoningEffort: options.reasoningEffort });
   }
-  if (!options.baseUrl) throw new Error('--base-url is required for OpenAI-compatible providers.');
+  const baseUrl = options.provider === 'ollama'
+    ? options.baseUrl ?? 'http://127.0.0.1:11434/v1'
+    : options.baseUrl;
+  if (!baseUrl) throw new Error('--base-url is required for OpenAI-compatible providers.');
   return new CanonicalModelDriver(new OpenAICompatibleTransport(
     options.model,
     apiKey,
-    options.baseUrl,
-  ));
+    baseUrl,
+    fetch,
+    options.modelTimeoutMs,
+    inferredDialect(options),
+  ), { profile: options.modelProfile, reasoningEffort: options.reasoningEffort });
 }
 
 export async function runTask(options: RunCommandOptions): Promise<WorkflowRunResult> {
   const task = loadJson<HyperTaskFile>(resolve(options.taskPath));
   if (task.version !== '0.2.0') throw new Error(`Unsupported task version: ${task.version}.`);
+  const runId = options.runId ?? task.runId ?? `run:${randomUUID()}`;
   const workspace = resolve(options.workspace);
   const capabilities = new CapabilityRegistry()
     .register(new ReadFileCapability(workspace))
@@ -137,13 +180,13 @@ export async function runTask(options: RunCommandOptions): Promise<WorkflowRunRe
 
   const ledger = new HashChainLedger(new JsonlLedgerStore(resolve(options.ledgerPath)));
   const runner = new WorkflowRunner({
-    model: await modelFor(options),
+    model: await createModelDriver(options),
     capabilities,
     ledger,
     now: options.now,
   });
   return runner.run({
-    runId: task.runId,
+    runId,
     intent: taskIntent(task),
     conditions: task.conditions,
     constraints: task.constraints,
@@ -152,6 +195,8 @@ export async function runTask(options: RunCommandOptions): Promise<WorkflowRunRe
     focusTags: task.focusTags,
     tokenBudget: task.tokenBudget,
     maxSteps: task.maxSteps,
+    approvalFor: proposalId => task.approvals?.find(approval => approval.proposalId === proposalId),
+    correctionRules: task.correctionRules,
   });
 }
 

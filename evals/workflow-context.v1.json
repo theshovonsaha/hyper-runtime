@@ -1,6 +1,6 @@
 {
   "benchmark": "adaptive-context-workflow",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "fixedNow": "2026-07-24T12:00:00.000Z",
   "researchQuestion": "Does phase-specific context curation preserve authoritative constraints and isolate stale or untrusted material, while causal workflow control rejects false completion and recovers through bounded pivots?",
   "contextScenarios": [
@@ -58,6 +58,9 @@
       ],
       "expectedIncluded": ["evidence:current"],
       "expectedExcluded": ["evidence:expired"],
+      "expectedExclusionReasons": {
+        "evidence:expired": "expired"
+      },
       "expectedNonInstructionEligible": []
     },
     {
@@ -115,6 +118,37 @@
       "expectedIncluded": ["evidence:failure"],
       "expectedExcluded": ["history:unrelated"],
       "expectedNonInstructionEligible": []
+    },
+    {
+      "id": "collapse_duplicate_representation",
+      "focusTags": ["result"],
+      "tokenBudget": 120,
+      "sources": [
+        {
+          "id": "evidence:canonical-result",
+          "content": "The verified result contains value 42.",
+          "kind": "evidence",
+          "authority": "evidence",
+          "validity": "active",
+          "tags": ["result"],
+          "priority": 60
+        },
+        {
+          "id": "history:duplicate-result",
+          "content": "The verified result contains value 42.",
+          "kind": "conversation",
+          "authority": "data",
+          "validity": "active",
+          "tags": ["result"],
+          "priority": 20
+        }
+      ],
+      "expectedIncluded": ["evidence:canonical-result"],
+      "expectedExcluded": ["history:duplicate-result"],
+      "expectedExclusionReasons": {
+        "history:duplicate-result": "duplicate"
+      },
+      "expectedNonInstructionEligible": ["evidence:canonical-result"]
     }
   ],
   "workflowScenarios": [

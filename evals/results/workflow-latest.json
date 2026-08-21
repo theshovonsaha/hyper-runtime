@@ -1,11 +1,11 @@
 {
   "benchmark": "adaptive-context-workflow",
-  "benchmarkVersion": "1.0.0",
+  "benchmarkVersion": "1.1.0",
   "researchQuestion": "Does phase-specific context curation preserve authoritative constraints and isolate stale or untrusted material, while causal workflow control rejects false completion and recovers through bounded pivots?",
   "design": {
     "deterministic": true,
     "modelCalls": 0,
-    "contextScenarios": 4,
+    "contextScenarios": 5,
     "workflowScenarios": 3
   },
   "metrics": {
@@ -30,6 +30,8 @@
       ],
       "expectedExcluded": [],
       "actualExcluded": [],
+      "expectedExclusionReasons": {},
+      "actualExclusionReasons": {},
       "expectedNonInstructionEligible": [],
       "actualNonInstructionEligible": [
         "evidence:implementation"
@@ -50,6 +52,12 @@
       "actualExcluded": [
         "evidence:expired"
       ],
+      "expectedExclusionReasons": {
+        "evidence:expired": "expired"
+      },
+      "actualExclusionReasons": {
+        "evidence:expired": "expired"
+      },
       "expectedNonInstructionEligible": [],
       "actualNonInstructionEligible": [
         "evidence:current"
@@ -68,6 +76,8 @@
       ],
       "expectedExcluded": [],
       "actualExcluded": [],
+      "expectedExclusionReasons": {},
+      "actualExclusionReasons": {},
       "expectedNonInstructionEligible": [
         "web:malicious"
       ],
@@ -90,9 +100,41 @@
       "actualExcluded": [
         "history:unrelated"
       ],
+      "expectedExclusionReasons": {},
+      "actualExclusionReasons": {
+        "history:unrelated": "irrelevant"
+      },
       "expectedNonInstructionEligible": [],
       "actualNonInstructionEligible": [
         "evidence:failure"
+      ],
+      "passed": true
+    },
+    {
+      "scenarioId": "collapse_duplicate_representation",
+      "expectedIncluded": [
+        "evidence:canonical-result"
+      ],
+      "actualIncluded": [
+        "evidence:canonical-result"
+      ],
+      "expectedExcluded": [
+        "history:duplicate-result"
+      ],
+      "actualExcluded": [
+        "history:duplicate-result"
+      ],
+      "expectedExclusionReasons": {
+        "history:duplicate-result": "duplicate"
+      },
+      "actualExclusionReasons": {
+        "history:duplicate-result": "duplicate"
+      },
+      "expectedNonInstructionEligible": [
+        "evidence:canonical-result"
+      ],
+      "actualNonInstructionEligible": [
+        "evidence:canonical-result"
       ],
       "passed": true
     }

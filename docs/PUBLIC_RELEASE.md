@@ -38,6 +38,17 @@ Before committing, confirm that none of these appear in staged files:
 Then create the repository, commit, and tag `v0.2.0`. Do not call the release
 production-ready or security-proven.
 
+`bun run packages:check` packs every public workspace and rejects leaked
+`workspace:*` dependencies. `bun run release:check` runs the full gate, package
+audit, CLI help smoke test, and production UI build. The GitHub release workflow
+uses npm trusted publishing/OIDC and provenance; it does not store an npm token.
+Publishing still requires the repository owner to configure the npm trusted
+publisher and approve the protected `npm` environment.
+
+The scheduled reproduction workflow runs the clean gate on Ubuntu and macOS
+and uploads the generated evaluation reports. These workflows make external
+reproduction easier; their presence is not itself an external reproduction.
+
 ## Short description for an Anthropic application
 
 > I built Hyper-Runtime, an early open-source research prototype that tests a

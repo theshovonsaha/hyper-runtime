@@ -44,14 +44,15 @@ export class WorkspaceTargetResolver {
     this.root = realpathSync(root);
   }
 
-  resolve(target: string, allowMissingLeaf = false): string {
+  resolve(target: string, allowMissingLeaf = false, allowRoot = false): string {
     if (!target.startsWith('workspace/') || target.includes('\0')) {
       throw new Error('Target must be a workspace-relative resource.');
     }
     const relativeTarget = target.slice('workspace/'.length);
-    if (!relativeTarget || isAbsolute(relativeTarget)) {
+    if ((!relativeTarget && !allowRoot) || isAbsolute(relativeTarget)) {
       throw new Error('Target must identify a workspace descendant.');
     }
+    if (!relativeTarget && allowRoot) return this.root;
     const candidate = resolve(this.root, relativeTarget);
     const relation = relative(this.root, candidate);
     if (!relation || relation === '..' || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {

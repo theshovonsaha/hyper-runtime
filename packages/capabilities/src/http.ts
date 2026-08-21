@@ -25,7 +25,10 @@ interface HttpObservation {
 }
 
 export interface HttpCapabilityOptions {
+  id?: string;
+  description?: string;
   allowedHosts: string[];
+  pathPrefixes?: Record<string, string[]>;
   allowHttp?: boolean;
   maxRedirects?: number;
   maxBytes?: number;
@@ -73,6 +76,11 @@ async function defaultResolveHost(hostname: string): Promise<string[]> {
   return entries.map(entry => entry.address);
 }
 
+function normalizedPathPrefix(value: string): string {
+  const normalized = `/${value.replace(/^\/+|\/+$/g, '')}`;
+  return normalized === '/' ? '/' : normalized;
+}
+
 async function readLimited(response: Response, maxBytes: number): Promise<string> {
   if (!response.body) return '';
   const reader = response.body.getReader();
@@ -107,17 +115,35 @@ export class AllowlistedHttpCapability implements CapabilityAdapter<HttpGetArgs>
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.resolveHost = options.resolveHost ?? defaultResolveHost;
     this.manifest = {
-      id: 'network.http.get',
+      id: options.id ?? 'network.http.get',
       version: '0.2.0',
+      description: options.description,
       effects: ['network.request', 'state.read'],
-      targetPatterns: options.allowedHosts.flatMap(host => [
-        `https://${host}/**`,
-        ...(options.allowHttp ? [`http://${host}/**`] : []),
-      ]),
+      requiredEffects: ['network.request'],
+      targetPatterns: options.allowedHosts.flatMap(host => {
+        const prefixes = options.pathPrefixes?.[host] ?? ['/'];
+        return prefixes.flatMap(prefix => {
+          const normalized = normalizedPathPrefix(prefix);
+          const patterns = (protocol: 'https' | 'http') => normalized === '/'
+            ? [`${protocol}://${host}/**`]
+            : [`${protocol}://${host}${normalized}`, `${protocol}://${host}${normalized}/**`];
+          return [...patterns('https'), ...(options.allowHttp ? patterns('http') : [])];
+        });
+      }),
       riskCeiling: 3,
       approval: 'risk_based',
       idempotent: true,
       verification: 'required',
+      inputSchema: {
+        type: 'object',
+        required: ['url'],
+        properties: {
+          url: { type: 'string' },
+          expectedStatus: { type: 'integer' },
+          maxBytes: { type: 'integer' },
+        },
+        additionalProperties: false,
+      },
     };
   }
 
@@ -129,6 +155,20 @@ export class AllowlistedHttpCapability implements CapabilityAdapter<HttpGetArgs>
     }
     if (!this.options.allowedHosts.includes(url.hostname)) {
       throw new Error('URL host is not allowlisted.');
+    }
+    const configuredPrefixes = this.options.pathPrefixes?.[url.hostname];
+    if (configuredPrefixes) {
+      let decodedPath: string;
+      try {
+        decodedPath = decodeURIComponent(url.pathname);
+      } catch {
+        throw new Error('URL path encoding is invalid.');
+      }
+      const pathAllowed = configuredPrefixes.some(value => {
+        const prefix = normalizedPathPrefix(value);
+        return prefix === '/' || decodedPath === prefix || decodedPath.startsWith(`${prefix}/`);
+      });
+      if (!pathAllowed) throw new Error('URL path is outside the configured prefix.');
     }
     const addresses = await this.resolveHost(url.hostname);
     if (addresses.length === 0 || addresses.some(isPrivateAddress)) {

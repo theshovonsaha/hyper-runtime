@@ -35,7 +35,7 @@ import { buildProvider, type Provider, ProviderError, nextFallbackProvider } fro
 import { capabilitiesFor } from './capabilities';
 import { runPlanner, type Plan } from './planner';
 import { runVerifier, runCompletionCheck, runDistiller } from './verifier';
-import { runActionLoop, createLoopState, type LoopConfig } from './loop';
+import { runActionLoop, createLoopState, type LoopConfig, LoopOutcome } from './loop';
 import { PacketTrail } from './packet';
 import { computeAttribution } from './attribution';
 import { evaluateScorecard } from './scorecard';
@@ -339,7 +339,7 @@ export class RunKernel {
             const result = await this.registry.execute(tc.toolName, tc.args, toolCtx);
             log.emit('tool.result', { name: tc.toolName, success: result.success, content: result.content.slice(0, 500) }, { summary: `tool ${tc.toolName}: ${result.success ? 'ok' : 'FAILED'} (50/50)` });
             
-            trail.emit('tool.call', { name: tc.toolName, args: tc.args }, '50/50 deterministic tool execution');
+            trail.emit('execution', { name: tc.toolName, args: tc.args }, '50/50 deterministic tool execution');
           }
 
           outcome = { kind: 'complete', text: dualPlan.deterministicOutput || 'Completed deterministically', degraded: false };
@@ -411,7 +411,7 @@ export class RunKernel {
 
           finalOutcome = await runActionLoop(
             provider,
-            packet.toMessages(),
+            packet,
             tools as any,
             toolNames,
             this.registry,
@@ -455,7 +455,10 @@ export class RunKernel {
             const degraded = finalOutcome.kind === 'complete' ? finalOutcome.degraded : false;
 
             // ---- Deterministic Side-Effect Guard Pass ----
-            const guardRes = this.sideEffectGuard.inspectResponse(finalText, state.toolCallLog || []);
+            const guardRes = this.sideEffectGuard.inspectResponse(
+              finalText,
+              (state.toolCallLog || []).map((t: any) => ({ ...t, toolName: t.toolName ?? t.name })),
+            );
             if (!guardRes.passed) {
               finalText = guardRes.annotatedText;
               log.emit('side_effect_guard.alert' as any, guardRes as any, {

@@ -8,7 +8,19 @@
  *   - fail-safe (parse failure downgrades the stage, never crashes the run)
  */
 
-import type { Provider } from '../providers/base';
+// Minimal Provider type used by this module. The project previously imported
+// ../providers/base which may not exist at this path in all setups; keep a
+// local lightweight definition to avoid a hard dependency while preserving
+// type-safety for the methods this file relies on.
+export interface Provider {
+  // streamTurn takes message turns, an options array, and a progress callback,
+  // and resolves to an object with a `text` property containing the model output.
+  streamTurn(
+    messages: Array<{ role: string; content: string }>,
+    opts: any[],
+    onProgress: () => Promise<void>,
+  ): Promise<{ text: string }>;
+}
 
 /** A single planned step */
 export interface PlanStep {
@@ -26,6 +38,7 @@ export interface Plan {
 
 const PLAN_SYSTEM_PROMPT = `You are the planning stage of a transparent agent runtime.
 You are the decisive leader and the right question asker.
+use internal thinking technuqes to use cognition with simplest signals adn solutions for this request.
 Given the user objective and the available tools, produce a short plan.
 If the objective is vague or dangerous, your strategy should be to ask clarifying questions.
 Return STRICT JSON only:

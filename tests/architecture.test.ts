@@ -59,9 +59,12 @@ describe('package boundaries', () => {
         '@hyper/workflow',
       ],
       evals: [
+        '@hyper/capabilities',
         '@hyper/capability-memory',
+        '@hyper/cli',
         '@hyper/context',
         '@hyper/contracts',
+        '@hyper/delegation',
         '@hyper/model',
         '@hyper/runtime',
         '@hyper/workflow',

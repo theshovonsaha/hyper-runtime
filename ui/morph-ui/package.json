@@ -1,0 +1,27 @@
+{
+  "name": "morph-ui",
+  "version": "0.1.0",
+  "description": "A shape-morphing UI system: an extensible SVG shape engine, React primitives for panels/avatars, and an optional chat kit built on top.",
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    ".": "./src/core/index.js",
+    "./core": "./src/core/index.js",
+    "./react": "./src/react/index.js",
+    "./chatkit": "./src/react/chatkit.jsx",
+    "./chatkit-nodes": "./src/react/chatkit-nodes.jsx",
+    "./styles.css": "./src/styles/theme.css"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0",
+    "lucide-react": ">=0.300.0"
+  },
+  "peerDependenciesMeta": {
+    "lucide-react": { "optional": false }
+  },
+  "keywords": ["react", "svg", "morph", "shapes", "chat-ui", "design-system"],
+  "license": "MIT"
+}

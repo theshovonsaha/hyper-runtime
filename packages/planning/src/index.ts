@@ -4,6 +4,12 @@ import type {
   ExecutableWorkflowPlan,
   PlanCondition,
   RiskLevel,
+  WorkflowCandidate,
+  WorkflowRunResult,
+  WorkflowBacktestReport,
+  HumanWorkflowActivation,
+  ComposedWorkflowPlan,
+  WorkflowNode,
 } from '@hyper/contracts';
 
 export type PrimitiveWorkflowOperation =
@@ -26,6 +32,123 @@ export interface CompileWorkflowInput {
   intentId: string;
   now: string;
   idFactory?: () => string;
+}
+
+export interface SemanticWorkflowOperationAdapter {
+  readonly id: string;
+  compile(input: {
+    nodeId: string;
+    parameters: Readonly<Record<string, unknown>>;
+    intent: Readonly<ComposedWorkflowPlan['intent']>;
+  }): WorkflowNode;
+}
+
+function workflowObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}_OBJECT_REQUIRED`);
+  return value as Record<string, unknown>;
+}
+
+/** Validates a declarative workflow graph into an inert plan. The compiler
+ * resolves no adapters, performs no model calls, and grants no authority. */
+export function compileWorkflowConfig(value: unknown): ComposedWorkflowPlan {
+  const config = workflowObject(value, 'WORKFLOW_CONFIG');
+  const intent = workflowObject(config.intent, 'WORKFLOW_INTENT') as unknown as ComposedWorkflowPlan['intent'];
+  if (typeof config.id !== 'string' || !config.id.trim()) throw new Error('WORKFLOW_ID_REQUIRED');
+  if (config.version !== '1.0') throw new Error('WORKFLOW_VERSION_UNSUPPORTED');
+  if (typeof intent.id !== 'string' || typeof intent.objective !== 'string') throw new Error('WORKFLOW_INTENT_INVALID');
+  const ids = new Set<string>();
+  const validateNode = (raw: unknown): WorkflowNode => {
+    const node = workflowObject(raw, 'WORKFLOW_NODE') as Record<string, unknown>;
+    if (typeof node.id !== 'string' || !node.id.trim() || ids.has(node.id)) throw new Error('WORKFLOW_NODE_ID_INVALID');
+    ids.add(node.id);
+    if (typeof node.kind !== 'string') throw new Error('WORKFLOW_NODE_KIND_REQUIRED');
+    if (node.kind === 'action') {
+      const proposal = workflowObject(node.proposal, 'WORKFLOW_ACTION_PROPOSAL');
+      if (typeof proposal.capabilityId !== 'string' || typeof proposal.target !== 'string') throw new Error('WORKFLOW_ACTION_INVALID');
+    } else if (node.kind === 'deterministic') {
+      if (typeof node.adapterId !== 'string' || typeof node.outputFact !== 'string') throw new Error('WORKFLOW_DETERMINISTIC_INVALID');
+      workflowObject(node.input, 'WORKFLOW_DETERMINISTIC_INPUT');
+      workflowObject(node.outputSchema, 'WORKFLOW_DETERMINISTIC_SCHEMA');
+    } else if (node.kind === 'model') {
+      if (typeof node.operation !== 'string' || typeof node.outputFact !== 'string') throw new Error('WORKFLOW_MODEL_INVALID');
+      workflowObject(node.input, 'WORKFLOW_MODEL_INPUT');
+      workflowObject(node.outputSchema, 'WORKFLOW_MODEL_SCHEMA');
+    } else if (node.kind === 'sequence' || node.kind === 'parallel') {
+      if (!Array.isArray(node.children)) throw new Error('WORKFLOW_CHILDREN_REQUIRED');
+      if (node.kind === 'parallel' && (!Number.isInteger(node.maxConcurrency) || Number(node.maxConcurrency) < 1 || Number(node.maxConcurrency) > 32)) {
+        throw new Error('WORKFLOW_PARALLEL_BOUND_INVALID');
+      }
+      node.children = node.children.map(validateNode);
+    } else if (node.kind === 'choice') {
+      workflowObject(node.predicate, 'WORKFLOW_PREDICATE');
+      node.whenTrue = validateNode(node.whenTrue);
+      if (node.whenFalse !== undefined) node.whenFalse = validateNode(node.whenFalse);
+    } else if (node.kind === 'loop') {
+      workflowObject(node.predicate, 'WORKFLOW_PREDICATE');
+      if (!Number.isInteger(node.maxIterations) || Number(node.maxIterations) < 1 || Number(node.maxIterations) > 100) throw new Error('WORKFLOW_LOOP_BOUND_INVALID');
+      node.body = validateNode(node.body);
+    } else if (node.kind === 'gate') {
+      if (typeof node.reason !== 'string' || !node.reason.trim()) throw new Error('WORKFLOW_GATE_REASON_REQUIRED');
+      node.child = validateNode(node.child);
+    } else if (node.kind === 'verify') {
+      if (!Array.isArray(node.verifierIds) || !Array.isArray(node.claims)) throw new Error('WORKFLOW_VERIFY_INVALID');
+    } else if (node.kind === 'subworkflow') {
+      workflowObject(node.intent, 'WORKFLOW_CHILD_INTENT');
+      node.child = validateNode(node.child);
+    } else throw new Error(`WORKFLOW_NODE_KIND_UNSUPPORTED:${node.kind}`);
+    return structuredClone(node) as unknown as WorkflowNode;
+  };
+  return {
+    id: config.id,
+    version: '1.0',
+    intent: structuredClone(intent),
+    root: validateNode(config.root),
+  };
+}
+
+/** Lowers semantic `use:` steps through a reviewed, code-owned adapter catalog.
+ * Config chooses parameters, never arbitrary functions, capabilities, or
+ * authority. The lowered graph is validated again as an inert workflow. */
+export function compileSemanticWorkflowConfig(
+  value: unknown,
+  adapters: readonly SemanticWorkflowOperationAdapter[],
+): ComposedWorkflowPlan {
+  const config = workflowObject(value, 'SEMANTIC_WORKFLOW_CONFIG');
+  const workflowId = typeof config.workflow === 'string' && config.workflow.trim()
+    ? config.workflow.trim()
+    : typeof config.id === 'string' && config.id.trim()
+      ? config.id.trim()
+      : undefined;
+  if (!workflowId) throw new Error('SEMANTIC_WORKFLOW_ID_REQUIRED');
+  const intent = workflowObject(config.intent, 'SEMANTIC_WORKFLOW_INTENT') as unknown as ComposedWorkflowPlan['intent'];
+  if (!Array.isArray(config.steps) || config.steps.length === 0) throw new Error('SEMANTIC_WORKFLOW_STEPS_REQUIRED');
+  const catalog = new Map(adapters.map(adapter => [adapter.id, adapter]));
+  if (catalog.size !== adapters.length || adapters.some(adapter => !adapter.id.trim())) {
+    throw new Error('SEMANTIC_WORKFLOW_ADAPTER_IDS_INVALID');
+  }
+  const children = config.steps.map((raw, index) => {
+    const step = workflowObject(raw, 'SEMANTIC_WORKFLOW_STEP');
+    const use = typeof step.use === 'string' ? step.use.trim() : '';
+    const adapter = catalog.get(use);
+    if (!adapter) throw new Error(`SEMANTIC_WORKFLOW_OPERATION_UNAVAILABLE:${use || '<missing>'}`);
+    const parameters = step.with === undefined
+      ? {}
+      : workflowObject(step.with, 'SEMANTIC_WORKFLOW_PARAMETERS');
+    const nodeId = typeof step.id === 'string' && step.id.trim()
+      ? step.id.trim()
+      : `${workflowId}:step:${index + 1}`;
+    return adapter.compile({
+      nodeId,
+      parameters: Object.freeze(structuredClone(parameters)),
+      intent: Object.freeze(structuredClone(intent)),
+    });
+  });
+  return compileWorkflowConfig({
+    id: workflowId,
+    version: '1.0',
+    intent,
+    root: { id: `${workflowId}:root`, kind: 'sequence', children },
+  });
 }
 
 function compact(value: string): string {
@@ -293,3 +416,49 @@ export function compileNaturalLanguageWorkflow(
   };
 }
 
+export interface CrystallizeWorkflowInput {
+  id: string;
+  plan: ExecutableWorkflowPlan;
+  sourceRuns: WorkflowRunResult[];
+  parameterSlots?: string[];
+  now: string;
+}
+
+/** Converts only verified successful traces into an inert, reviewable candidate. */
+export function crystallizeVerifiedWorkflow(input: CrystallizeWorkflowInput): WorkflowCandidate {
+  if (input.sourceRuns.length === 0) throw new Error('WORKFLOW_CANDIDATE_REQUIRES_SOURCE_RUNS');
+  if (input.sourceRuns.some(run => run.status !== 'completed' || run.completion?.passed !== true)) {
+    throw new Error('WORKFLOW_CANDIDATE_SOURCE_NOT_VERIFIED');
+  }
+  const slots = [...new Set(input.parameterSlots ?? [])];
+  const confidence = Math.min(1, input.sourceRuns.length / 5);
+  return {
+    id: input.id,
+    status: 'candidate',
+    sourceRunIds: input.sourceRuns.map(run => run.runId),
+    plan: structuredClone(input.plan),
+    parameterSlots: slots,
+    confidence,
+    verifiedSourceOutcomes: input.sourceRuns.length,
+    createdAt: input.now,
+  };
+}
+
+/** Backtest and a human receipt are both required; neither grants runtime authority. */
+export function activateWorkflowCandidate(
+  candidate: WorkflowCandidate,
+  backtest: WorkflowBacktestReport,
+  activation: HumanWorkflowActivation,
+): WorkflowCandidate {
+  if (candidate.status !== 'candidate') throw new Error('WORKFLOW_CANDIDATE_NOT_ACTIVATABLE');
+  if (backtest.candidateId !== candidate.id || !backtest.acceptancePassed || backtest.failed > 0) {
+    throw new Error('WORKFLOW_CANDIDATE_BACKTEST_FAILED');
+  }
+  if (
+    activation.candidateId !== candidate.id
+    || !activation.principalId.trim()
+    || !activation.receiptId.trim()
+    || !Number.isFinite(Date.parse(activation.approvedAt))
+  ) throw new Error('WORKFLOW_CANDIDATE_HUMAN_ACTIVATION_INVALID');
+  return { ...structuredClone(candidate), status: 'ready' };
+}

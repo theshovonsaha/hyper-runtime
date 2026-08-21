@@ -161,12 +161,13 @@ verification. Planned additions:
 
 ## Version 2 adaptive mechanism benchmark
 
-`evals/workflow-context.v1.json` adds four context fixtures and three workflow
+`evals/workflow-context.v1.json` v1.1 adds five context fixtures and three workflow
 fixtures. It measures:
 
 - inclusion of authoritative constraints;
 - exclusion of stale and budget-irrelevant sources;
 - isolation of untrusted content from instruction authority;
+- exact duplicate dynamic-source collapse with an explicit exclusion reason;
 - expected workflow terminal state;
 - causal trace coverage;
 - recovery through a non-cyclic strategy pivot;
@@ -181,6 +182,27 @@ relevance gate; the fixture and threshold were not weakened.
 Version 2 passes all deterministic acceptance criteria. It still uses scripted
 proposals and makes zero model calls, so it establishes mechanism behavior, not
 live-model reliability.
+
+## Correction grammar mechanism ablation
+
+`evals/correction-grammar.v1.json` freezes one failure-to-constraint rule and
+its expected baseline and treatment outcomes before the compile-gated test is
+run:
+
+| Condition | Failure-derived constraint | Expected status |
+|---|---|---|
+| Baseline | absent | `step_limit` |
+| Treatment | one bounded application | `completed` |
+
+The fixture also requires exactly one `correction.applied` event, inclusion of
+the correction source in the next context packet, and an `improved` assessment
+after verified action completion. It uses a deterministic context-responsive
+fixture driver and makes zero model calls.
+
+This establishes wiring and causal event attribution only. It does not show
+that correction rules can be learned from conversation, that arbitrary
+instructions improve model behavior, that the rule caused semantic quality,
+or that a correction transfers across tasks or models.
 
 ## Delegation mechanism status
 
@@ -212,6 +234,45 @@ false parent acceptance, legitimate child completion, recovery, latency,
 tokens, and actions. Fixtures and thresholds must be frozen before mechanisms
 are tuned.
 
+## Semantic workflow composition
+
+The runtime separates known control structure from adaptive judgment. A
+reviewable `ComposedWorkflowPlan` supports `sequence`, bounded `parallel`,
+`choice`, bounded `loop`, `gate`, `verify`, narrowed `subworkflow`, capability
+`action`, registered `deterministic` steps, and schema-bounded `model`
+operations. `compileSemanticWorkflowConfig` lowers semantic `use:` entries only
+through a reviewed code-owned adapter catalog, then `compileWorkflowConfig`
+validates the resulting graph. Neither compiler calls a model, grants
+authority, or executes an effect.
+
+```text
+known structure -> workflow node
+simple transform -> reviewed deterministic adapter
+ambiguous choice -> schema-bounded model operation
+effect -> ordinary capability proposal -> policy -> observe -> verify
+```
+
+Parallel composition is deliberately conservative: nodes containing write,
+delete, or process effects are rejected until explicitly serialized. A model
+output becomes only a typed fact. It cannot directly authorize a later action.
+Verified repeated traces may be crystallized into inert workflow candidates,
+but backtesting plus an explicit human activation receipt are required before
+reuse. This implements progressive compilation as a review process, not online
+model retraining.
+
+The context system avoids a mandatory preprocessing-model call. Recent
+conversation, reviewed semantic records, and verified observations are selected
+by deterministic phase, authority, validity, relevance, duplicate, and budget
+rules. Optional model inference can propose a semantic record, but the raw
+source and provenance remain inspectable.
+
+Textual architecture alone is not evidence. The evidence ladder used here is:
+
+```text
+design claim -> typed contract -> enforced transition -> test -> frozen eval
+  -> credentialed live run -> independent reproduction
+```
+
 ## LLM extraction
 
 ```text
@@ -225,3 +286,164 @@ parent authority
     -> child verification establishes a candidate result
       -> parent validation decides whether that result enters parent state
 ```
+
+## Adversarial and live-provider extension
+
+`evals/adversarial-runtime.v1.json` freezes representative resource escape,
+prompt-injection authority, prose proposal, child authority expansion, unmapped
+MCP tool, and cross-session retrieval attacks. `bun run check` executes these
+fixtures with zero model calls and requires a 100% pass rate.
+
+`bun run eval:live` is a separate credentialed experiment across configured
+Gemini, Groq, NVIDIA, DeepSeek, Mistral, and OpenCode routes. It records
+`evidenceClass: live_model`, provider/model identity, latency, proposal kind,
+errors, and whether actions stayed inside supplied authority. Its results must
+not be conflated with deterministic fixture evidence.
+
+## Runtime scenario lab and specialized benchmark
+
+`evals/runtime-lab.v1.json` predeclares ten terminal outcomes and their required
+and forbidden canonical events. The runner injects throws, timeouts,
+false-success reports, stale observations, malformed results, and partial
+effects. A successful adapter return alone cannot satisfy a trial.
+
+`evals/specialized-agent.v1.json` freezes ten seeds crossed with five workspace
+fault mutations (50 trials). Each trial is repeated and trace reproducibility is
+measured. The report includes treatment completion accuracy, false-success and
+authority-violation rates, plus a labelled counterfactual reachability-only
+baseline.
+
+Both suites use deterministic adapters and make zero model calls. They establish
+behavior under committed faults, not live planning quality, general factual
+correctness, or external validity. The smallest next experiment is a held-out,
+independently authored domain fixture followed separately by the credentialed
+provider suite.
+
+## Current chat and agent research convergence (2026-08-20)
+
+This section records implementation-relevant findings from current primary
+documentation and recent papers. Product documentation is evidence about an API
+contract or reported harness experiment, not independent validation. Recent
+papers below are preprints unless their publication venue says otherwise.
+
+### Conversation and tool use are different lanes
+
+Anthropic's current tool-use contract distinguishes a direct answer from a
+client-tool loop. Stable knowledge, creative work, and conversational turns can
+return text directly. Fresh data, private state, and effects require tools. A
+client-tool loop continues only while `stop_reason` is `tool_use`; `max_tokens`,
+`refusal`, pauses, and other terminal reasons must be handled explicitly.
+
+- [How tool use works](https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works)
+- [Build a tool-using agent](https://platform.claude.com/docs/en/agents-and-tools/tool-use/build-a-tool-using-agent)
+- [Tool runner SDK contract](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-runner)
+
+Hyper previously forced ordinary chat into its workflow-proposal grammar. The
+runtime now has a direct conversational lane for turns with no matched external
+capability intent. It performs one natural-language model call, includes bounded
+recent session context, records provider usage, claims no observed-state
+verification, and falls back to the workflow path when a configured test or
+custom driver does not implement conversation. Requests for fresh information,
+files, memory, media, commands, or effects still use the policy-mediated
+workflow. Truncated `max_tokens`/`length` responses are rejected so route
+fallback can recover instead of presenting a partial answer.
+
+This is a deterministic router, not a learned intent classifier. Its next live
+evaluation must include indirect wording, false-positive tool triggers,
+knowledge that looks stable but changed, and requests that mix conversation
+with one external action.
+
+### Context is a budget, not a transcript archive
+
+The Claude Messages documentation states that system text, messages, tool
+definitions, tool results, images, documents, and generated thinking all occupy
+the context window. Cached tokens still occupy context. The API exposes a token
+count endpoint before generation and reports input, cache-read, cache-write, and
+output usage after generation. Current Claude documentation recommends
+server-side compaction for long-running conversations, while also warning that
+more context does not imply better recall.
+
+- [Context windows and compaction](https://platform.claude.com/docs/en/build-with-claude/context-windows)
+- [Count message tokens](https://platform.claude.com/docs/en/api/messages/count_tokens)
+- [Effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
+
+Hyper already applies deterministic relevance, authority, validity, duplicate,
+phase, and budget selection; retains rebuild provenance; and separates cache
+accounting from context capacity. It still estimates Anthropic preflight tokens
+instead of calling `/v1/messages/count_tokens`, and it serializes recent
+conversation into one bounded context field instead of provider-native
+alternating messages. Those are explicit optimization gaps, not evidence that
+session context is absent.
+
+The 2026 preprint [Less Context, Better Agents](https://arxiv.org/abs/2606.10209)
+reports better completion and substantially lower token/time use for a pruned
+recent-tool window plus summarization than for full history on its expense-task
+benchmark. The paper also reports model-specific differences, so Hyper should
+reproduce the comparison across its configured providers instead of adopting
+the reported window as a universal constant.
+
+### Memory needs separate competencies
+
+[MemoryAgentBench](https://arxiv.org/abs/2507.05257) evaluates incremental
+multi-turn memory across several competencies and reports that evaluated
+systems do not master all of them. This supports Hyper's separation of recent
+conversation, verified outcome memory, uploaded knowledge, temporal signals,
+relationships, and provenance. It does not establish that Hyper's fusion ranks
+correctly. The missing experiment is a session-isolated multi-turn suite that
+scores accurate retrieval, abstention, update/supersession, temporal ordering,
+and long-range reconstruction independently.
+
+### Tool design and discovery are part of model performance
+
+Anthropic reports that agent tools need evaluation-oriented names, boundaries,
+descriptions, useful token-efficient results, and examples. Its newer tool-use
+guidance supports deferred tool loading rather than placing a large catalog in
+every prompt.
+
+- [Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)
+- [Advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use)
+
+Hyper narrows built-in tool schemas by explicit task signals and keeps
+authorization independent from visibility. The remaining fallback that exposes
+all authorized manifests to an unrecognized workflow request exists for
+compatibility with custom drivers. Live runs should measure its frequency and
+replace it with reviewed tool search when the catalog becomes large.
+
+### Long-horizon coding needs state artifacts and independent evaluation
+
+Anthropic's 2026 harness report says compaction alone was insufficient in its
+long-running application experiment; structured handoff artifacts, context
+resets, decomposed work, and a separate skeptical evaluator improved the
+harness. These are reported results from one organization and model family, not
+universal laws.
+
+- [Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps)
+- [Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)
+
+Recent benchmark evidence also argues against claiming autonomous professional
+coding from short fixture success. [SWE-Bench Pro](https://arxiv.org/abs/2509.16941)
+reports sub-25% Pass@1 under its unified scaffold, while
+[Dialogue SWE-Bench](https://arxiv.org/abs/2606.13995) reports that explicitly
+engineering dialogue behavior can improve coding-task interaction. Hyper should
+therefore evaluate its chat router and coding harness jointly: clarification
+quality, task resolution, patch correctness, cost, context resets, operator
+interventions, and artifact handoff must all be reported.
+
+### Converged runtime shape
+
+```text
+user turn
+  -> deterministic intent signals
+     -> direct conversation (no external state, no verification claim)
+     -> bounded workflow (fresh/private/effectful work)
+          -> task-relevant tool schemas
+          -> model proposal
+          -> policy decision
+          -> effect -> observation -> verification
+          -> grounded response
+  -> canonical audit + session message projection
+```
+
+This separation preserves ordinary chat while keeping the research invariant
+that a model proposal is never authority and an effect is never called complete
+from prose alone.

@@ -65,6 +65,12 @@ Runtime-generated observations, failure diagnoses, and pivot decisions are
 already tagged and marked rebuildable, so the workflow feeds its structured
 history back into later phases.
 
+Session file retrieval adds another data-only source. Its projection may fuse
+lexical, semantic, temporal, and relationship signals, but ranking never raises
+authority. When embeddings are unavailable, context records the degraded mode
+and continues with bounded lexical/temporal/relationship retrieval. See
+`AGENTIC_RAG.md`.
+
 ## Deliberation without hidden chain-of-thought
 
 The runtime does not request or store private model reasoning. It stores

@@ -58,11 +58,19 @@ export class DeterministicPolicyEngine {
     if (proposal.declaredEffects.some(effect => !manifest.effects.includes(effect))) {
       reasons.push('UNDECLARED_CAPABILITY_EFFECT');
     }
+    if (manifest.requiredEffects?.some(effect => !proposal.declaredEffects.includes(effect))) {
+      reasons.push('REQUIRED_CAPABILITY_EFFECT_OMITTED');
+    }
     if (proposal.declaredEffects.some(effect => intent.prohibitedEffects.includes(effect))) {
       reasons.push('PROHIBITED_EFFECT');
     }
     if (proposal.risk > intent.riskBudget) reasons.push('INTENT_RISK_BUDGET_EXCEEDED');
     if (proposal.risk > manifest.riskCeiling) reasons.push('CAPABILITY_RISK_CEILING_EXCEEDED');
+    for (const evidenceId of proposal.expectedEvidence) {
+      if (!intent.requiredEvidence.includes(evidenceId)) {
+        reasons.push(`EVIDENCE_OUTSIDE_INTENT:${evidenceId}`);
+      }
+    }
 
     const conditionsById = new Map(conditions.map(condition => [condition.id, condition]));
     for (const requiredId of intent.requiredConditionIds) {

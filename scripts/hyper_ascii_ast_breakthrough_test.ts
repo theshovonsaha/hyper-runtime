@@ -38,7 +38,7 @@ async function runHyperAsciiAstBreakthroughTest() {
 
   // --- Phase 1: Zero-Copy ASCII Byte-Stream Lineage Hashing ---
   console.log('\n[Phase 1/3] ASCII Byte-Stream Pipeline & SHA-256 Provenance Lineage...');
-  const promptPayload = 'Refactor hypersonic system architecture with 8-lane ContextAssembler';
+  const promptPayload = 'Refactor hypersonic system architecture with 8-lane ContextAssembler. use internal thinking technuqes to use cognition with simplest signals adn solutions for this request.';
   const asciiBlock = asciiEngine.createAsciiBlock('block_001', promptPayload, 'ingestion');
 
   console.log(`  ASCII Block ID: ${asciiBlock.id} (${asciiBlock.byteLength} bytes)`);
