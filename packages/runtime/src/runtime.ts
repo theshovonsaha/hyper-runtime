@@ -50,6 +50,7 @@ export interface ExecuteActionInput {
   capability: CapabilityAdapter;
   approval?: Approval;
   verificationMode?: 'required' | 'trust_execution';
+  signal?: AbortSignal;
 }
 
 function outcomeForDecision(
@@ -136,7 +137,7 @@ export class AuthorizedRuntime {
     });
     let execution: CapabilityExecution;
     try {
-      execution = await capability.execute(proposal, decision.grant);
+      execution = await capability.execute(proposal, decision.grant, input.signal);
     } catch (error) {
       execution = {
         success: false,

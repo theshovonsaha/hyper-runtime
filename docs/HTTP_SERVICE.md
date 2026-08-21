@@ -164,7 +164,10 @@ credentials. `GET /api/models/:provider` discovers the live model inventory
 - `POST /api/gateways/:id/inbound` authenticates an allowlisted sender and
   submits its message under the inspect profile; ingress cannot choose scope.
 - `POST /api/media/voice-sessions/:handle/claim` consumes a one-time opaque
-  handle and returns the short-lived ElevenLabs WebSocket URL with `no-store`.
+  handle with `no-store`. ElevenLabs claims return a short-lived signed
+  WebSocket URL; Deepgram claims return a temporary bearer token and the
+  selected regional Voice Agent WebSocket URL. Long-lived project credentials
+  never enter either response.
   The signed URL is never written to the canonical ledger.
 - `GET|POST|PUT|DELETE /api/schedules` manages recurring runs, and
   `POST /api/schedules/:id/run` starts one immediately.

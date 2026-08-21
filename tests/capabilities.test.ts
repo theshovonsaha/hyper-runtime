@@ -320,6 +320,28 @@ describe('safe external capabilities', () => {
     expect(outcome.observation?.value).toMatchObject({ provider: 'brave' });
   });
 
+  test('propagates operator cancellation through an in-flight web request and commits a receipt', async () => {
+    const controller = new AbortController();
+    const capability = new WebSearchCapability({
+      tavilyApiKey: 'test-key',
+      fetchImpl: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+        controller.abort(new DOMException('Cancelled by operator.', 'AbortError'));
+      }),
+    });
+    const fixture = workflowFixture<WebSearchArgs>(capability, {
+      id: 'proposal:web-search-cancel', capabilityId: capability.manifest.id, target: 'search://web',
+      declaredEffects: ['network.request'], risk: 1, expectedEvidence: ['web_results_observed'],
+      idempotencyKey: 'web-search:cancel', args: { query: 'Canada household budgets' },
+    });
+    const runtime = new AuthorizedRuntime();
+    const outcome = await runtime.execute({
+      runId: 'run:web-search-cancel', now, ...fixture, capability, signal: controller.signal,
+    });
+    expect(outcome).toMatchObject({ status: 'execution_failed', execution: { errorCode: 'CAPABILITY_EXECUTION_THROWN' } });
+    expect(runtime.ledger.all().at(-1)?.type).toBe('action.receipt');
+  });
+
   test('writes and independently observes a workspace file', async () => {
     const root = temporaryWorkspace();
     const capability = new WriteFileCapability(root);

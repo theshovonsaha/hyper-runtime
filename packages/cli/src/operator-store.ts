@@ -473,6 +473,26 @@ export class JsonOperatorStore {
     return structuredClone(this.state.sessions.find(item => item.id === sessionId)?.messages);
   }
 
+  recentMessages(
+    sessionId: string,
+    options: { maxMessages?: number; maxCharacters?: number; excludeRunId?: string } = {},
+  ): OperatorMessage[] {
+    const session = this.state.sessions.find(item => item.id === sessionId);
+    if (!session) return [];
+    const maxMessages = Math.max(1, options.maxMessages ?? 12);
+    const maxCharacters = Math.max(1, options.maxCharacters ?? 8_000);
+    const retained: OperatorMessage[] = [];
+    let characters = 0;
+    for (let index = session.messages.length - 1; index >= 0 && retained.length < maxMessages; index -= 1) {
+      const message = session.messages[index]!;
+      if (options.excludeRunId && message.runId === options.excludeRunId) continue;
+      if (retained.length > 0 && characters + message.content.length > maxCharacters) break;
+      retained.unshift(message);
+      characters += message.content.length;
+    }
+    return structuredClone(retained);
+  }
+
   branchSession(input: {
     sourceSessionId: string;
     messageId: string;

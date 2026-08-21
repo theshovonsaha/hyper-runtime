@@ -136,7 +136,10 @@ Optional bounded media adapters add Deepgram and ElevenLabs transcription and
 speech output, one-time ElevenLabs private voice-agent sessions,
 OpenAI-compatible vision, and inline image generation. Media reads and writes
 remain workspace-contained; provider credentials and signed session URLs are
-excluded from durable events. See [HTTP service](docs/HTTP_SERVICE.md).
+excluded from durable events. Deepgram realtime sessions use one-time handles
+for short-lived bearer tokens under the same boundary. See
+[realtime voice convergence](docs/VOICE_RUNTIME.md) and
+[HTTP service](docs/HTTP_SERVICE.md).
 
 The operator library also exposes bounded-pass signals and a correction review
 queue. Correction candidates are inert records accepted for later experiments;

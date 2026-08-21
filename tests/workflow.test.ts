@@ -33,7 +33,12 @@ import {
   type ModelDriver,
   type ModelProposalScope,
 } from '@hyper/model';
-import { CapabilityRegistry, WorkflowRunner, type WorkflowDefinition } from '@hyper/workflow';
+import {
+  actionSatisfiesEvidenceRequirement,
+  CapabilityRegistry,
+  WorkflowRunner,
+  type WorkflowDefinition,
+} from '@hyper/workflow';
 
 const now = '2026-07-24T12:00:00.000Z';
 
@@ -424,6 +429,15 @@ function action(
   };
 }
 
+test('qualified evidence obligations require the verified action kind they name', () => {
+  const write = (action('proposal:evidence', 'strategy:direct', 'apply') as Extract<WorkflowProposal, { kind: 'action' }>).action;
+  expect(actionSatisfiesEvidenceRequirement(write, 'effect:state.write')).toBeTrue();
+  expect(actionSatisfiesEvidenceRequirement(write, 'effect:process.execute')).toBeFalse();
+  expect(actionSatisfiesEvidenceRequirement(write, 'capability:memory.workspace.write')).toBeTrue();
+  expect(actionSatisfiesEvidenceRequirement(write, 'capability:workspace.file.read')).toBeFalse();
+  expect(actionSatisfiesEvidenceRequirement(write, 'legacy_unqualified_evidence')).toBeTrue();
+});
+
 function correctionAwareModel(): ModelDriver {
   let actionIndex = 0;
   let repaired = false;
@@ -480,6 +494,21 @@ function correctionAwareModel(): ModelDriver {
 }
 
 describe('causal workflow and pivot control', () => {
+  test('completes a declared one-action workflow without a redundant model completion pass', async () => {
+    const fixture = workflowFixture([
+      action('proposal:fast-path', 'strategy:direct', 'apply'),
+      { kind: 'ask', strategyId: 'strategy:direct', question: 'This pass must not run.', reason: 'Redundant.' },
+    ]);
+    const result = await fixture.runner.run({ ...fixture.definition, completeAfterVerifiedAction: true });
+    expect(result).toMatchObject({
+      status: 'completed',
+      reasonCodes: ['VERIFIED_SINGLE_ACTION_FAST_PATH', 'COMPLETION_ORACLE_PASSED'],
+    });
+    expect(result.steps).toHaveLength(1);
+    expect(fixture.runner.ledger.all().find(event => event.type === 'workflow.completion_checked')?.payload)
+      .toMatchObject({ passed: true, deterministicFastPath: true });
+  });
+
   test('commits an explicit cancelled receipt when a model request is aborted', async () => {
     const controller = new AbortController();
     const model: ModelDriver = {
@@ -935,7 +964,7 @@ describe('canonical model boundary', () => {
     expect((await rotating.propose(packet, [], scope)).model).toBe('one');
     expect((await rotating.propose(packet, [], scope)).model).toBe('two');
 
-    const attempts: Array<{ operation: 'propose' | 'synthesize'; routeId: string; pass: number; preferred: boolean; attempt: number }> = [];
+    const attempts: Array<{ operation: 'propose' | 'synthesize' | 'respond'; routeId: string; pass: number; preferred: boolean; attempt: number }> = [];
     const pingPong = new RoutedModelDriver([
       { id: 'anthropic/claude', driver: driver('claude') },
       { id: 'openai/gpt', driver: driver('gpt', true) },

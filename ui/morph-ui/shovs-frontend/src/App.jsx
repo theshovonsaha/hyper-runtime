@@ -11,52 +11,37 @@ import { RuntimeLab } from './demos/RuntimeLab';
 import { MemoryGraph } from './demos/MemoryGraph';
 import { ContextInspector } from './demos/ContextInspector';
 import { BlobAvatar, MorphPanel, useViewStack } from 'morph-ui/react';
-import { Send, ChevronRight, Layers, MessageSquare, Terminal, FlaskConical, BrainCircuit, Braces } from 'lucide-react';
+import { Send, ChevronRight, Layers, MessageSquare, Terminal, FlaskConical, BrainCircuit, Braces, SlidersHorizontal } from 'lucide-react';
 
 function Header({ activeApp, setActiveApp }) {
   const { newSession, provider, currentModel, profile, setProfile, profiles } = useShovs();
+  const [systemOpen, setSystemOpen] = useState(false);
+  const systemViews = [
+    ['shovs-runtime', 'Runtime trail', Terminal],
+    ['runtime-lab', 'Evaluation lab', FlaskConical],
+    ['memory-graph', 'Memory graph', BrainCircuit],
+    ['context-inspector', 'Context inspector', Braces],
+    ['blob-playground', 'Visual system', Layers],
+  ];
   
   return (
     <header className="header">
       <BlobAvatar state="idle" size={28} />
       <span className="header-logo">Hyper</span>
-      <span className="header-sub">operator</span>
-      
-      {/* App Switcher Tabs */}
-      <div style={{ display: 'flex', gap: 6, marginLeft: 16 }}>
-        <button
-          className={`header-pill ${activeApp === 'chat-modal' ? 'on' : ''}`}
-          onClick={() => setActiveApp('chat-modal')}
-        >
-          <MessageSquare size={13} /> Agent run
-        </button>
-        <button 
-          className={`header-pill ${activeApp === 'shovs-runtime' ? 'on' : ''}`}
-          onClick={() => setActiveApp('shovs-runtime')}
-        >
-          <Terminal size={13} /> Runtime trail
-        </button>
-        <button 
-          className={`header-pill ${activeApp === 'runtime-lab' ? 'on' : ''}`}
-          onClick={() => setActiveApp('runtime-lab')}
-        >
-          <FlaskConical size={13} /> Runtime Lab
-        </button>
-        <button className={`header-pill ${activeApp === 'memory-graph' ? 'on' : ''}`} onClick={() => setActiveApp('memory-graph')}>
-          <BrainCircuit size={13} /> Memory
-        </button>
-        <button className={`header-pill ${activeApp === 'context-inspector' ? 'on' : ''}`} onClick={() => setActiveApp('context-inspector')}>
-          <Braces size={13} /> Context
-        </button>
-        <button
-          className={`header-pill ${activeApp === 'blob-playground' ? 'on' : ''}`}
-          onClick={() => setActiveApp('blob-playground')}
-        >
-          <Layers size={13} /> Gooey Canvas
-        </button>
-      </div>
+      <span className="header-sub">private operator</span>
 
       <span className="header-spacer"></span>
+
+      {activeApp !== 'chat-modal' && <button className="header-pill" onClick={() => setActiveApp('chat-modal')}><MessageSquare size={13}/> Return to operator</button>}
+      <div className="header-system-menu">
+        <button className={`header-pill ${activeApp !== 'chat-modal' ? 'on' : ''}`} onClick={() => setSystemOpen(value => !value)} aria-expanded={systemOpen}>
+          <SlidersHorizontal size={13}/> Inspect system
+        </button>
+        {systemOpen && <div className="header-system-popover">
+          <small>Expert surfaces</small>
+          {systemViews.map(([id, label, Icon]) => <button key={id} className={activeApp === id ? 'active' : ''} onClick={() => { setActiveApp(id); setSystemOpen(false); }}><Icon size={14}/><span>{label}</span><ChevronRight size={13}/></button>)}
+        </div>}
+      </div>
 
       {activeApp === 'shovs-runtime' && (
         <>
@@ -239,7 +224,7 @@ function MainLayout() {
         {activeApp === 'blob-playground' && <BlobPlayground />}
       </main>
       
-      <div className="hint-bar">
+      {activeApp !== 'chat-modal' && <div className="hint-bar">
         <span className="live-dot"></span>
         <span>
           {activeApp === 'chat-modal' && 'Morph Chat Modal · compact shape-morphing assistant card'}
@@ -249,7 +234,7 @@ function MainLayout() {
           {activeApp === 'context-inspector' && 'Context · exact model inputs, selection, tools, and detected drift'}
           {activeApp === 'blob-playground' && 'Gooey Canvas · interactive SVG shape morphing & fluid blob fusion'}
         </span>
-      </div>
+      </div>}
     </div>
   );
 }

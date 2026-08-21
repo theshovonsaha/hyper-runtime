@@ -148,8 +148,10 @@ export class WebSearchCapability implements CapabilityAdapter<WebSearchArgs> {
     query: string,
     maxResults: number,
     args: WebSearchArgs,
+    externalSignal?: AbortSignal,
   ): Promise<WebSearchObservation> {
-    const signal = AbortSignal.timeout(this.options.timeoutMs ?? 20_000);
+    const timeout = AbortSignal.timeout(this.options.timeoutMs ?? 20_000);
+    const signal = externalSignal ? AbortSignal.any([externalSignal, timeout]) : timeout;
     let input: string;
     let init: RequestInit;
     if (provider === 'tavily') {
@@ -226,6 +228,7 @@ export class WebSearchCapability implements CapabilityAdapter<WebSearchArgs> {
   async execute(
     proposal: ActionProposal<WebSearchArgs>,
     grant: CapabilityGrant,
+    signal?: AbortSignal,
   ): Promise<CapabilityExecution> {
     const invalid = validateGrant(proposal, grant, this.manifest, 'network.request');
     if (invalid) return invalid;
@@ -258,7 +261,7 @@ export class WebSearchCapability implements CapabilityAdapter<WebSearchArgs> {
     const failures: string[] = [];
     for (const provider of this.providers()) {
       try {
-        const observation = await this.search(provider, query, maxResults, proposal.args);
+        const observation = await this.search(provider, query, maxResults, proposal.args, signal);
         const results = observation.results;
       this.observations.set(proposal.id, observation);
       return {
@@ -272,6 +275,7 @@ export class WebSearchCapability implements CapabilityAdapter<WebSearchArgs> {
         }],
       };
       } catch (error) {
+        if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
         failures.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

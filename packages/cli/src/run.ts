@@ -28,6 +28,7 @@ import {
   type ModelDriver,
   type ModelRuntimeProfile,
   type ReasoningEffort,
+  type OpenAICompatibleDialect,
 } from '@hyper/model';
 import { HashChainLedger, JsonlLedgerStore, inspectReplay } from '@hyper/runtime';
 import { CapabilityRegistry, WorkflowRunner } from '@hyper/workflow';
@@ -68,6 +69,7 @@ export interface ModelSelectionOptions {
   modelTimeoutMs?: number;
   reasoningEffort?: ReasoningEffort;
   modelProfile?: ModelRuntimeProfile;
+  providerDialect?: OpenAICompatibleDialect;
 }
 
 export interface RunCommandOptions extends ModelSelectionOptions {
@@ -80,6 +82,23 @@ export interface RunCommandOptions extends ModelSelectionOptions {
 
 function loadJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, 'utf8')) as T;
+}
+
+function inferredDialect(options: ModelSelectionOptions): OpenAICompatibleDialect {
+  if (options.providerDialect) return options.providerDialect;
+  if (options.provider === 'ollama') return 'ollama';
+  const base = (options.baseUrl ?? '').toLowerCase();
+  if (base.includes('generativelanguage.googleapis.com')) return 'gemini';
+  if (base.includes('api.groq.com')) return 'groq';
+  if (base.includes('api.deepseek.com')) return 'deepseek';
+  if (base.includes('api.mistral.ai')) return 'mistral';
+  if (base.includes('nvidia.com')) return 'nvidia';
+  if (base.includes('opencode.ai')) return 'opencode';
+  if (base.includes('openrouter.ai')) return 'openrouter';
+  if (base.includes('1234')) return 'lmstudio';
+  if (base.includes('8080')) return 'llamacpp';
+  if (base.includes('api.openai.com')) return 'openai';
+  return 'generic';
 }
 
 function taskIntent(task: HyperTaskFile): IntentContract {
@@ -135,6 +154,7 @@ export async function createModelDriver(options: ModelSelectionOptions): Promise
     baseUrl,
     fetch,
     options.modelTimeoutMs,
+    inferredDialect(options),
   ), { profile: options.modelProfile, reasoningEffort: options.reasoningEffort });
 }
 

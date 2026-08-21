@@ -192,7 +192,7 @@ export interface ActionOutcome {
 
 export interface CapabilityAdapter<Args extends Record<string, unknown> = Record<string, unknown>> {
   readonly manifest: CapabilityManifest;
-  execute(proposal: ActionProposal<Args>, grant: CapabilityGrant): Promise<CapabilityExecution>;
+  execute(proposal: ActionProposal<Args>, grant: CapabilityGrant, signal?: AbortSignal): Promise<CapabilityExecution>;
   observe(proposal: ActionProposal<Args>): Promise<Observation>;
   verify(
     proposal: ActionProposal<Args>,

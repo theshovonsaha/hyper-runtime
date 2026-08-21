@@ -13,9 +13,14 @@ import {
   replayLedger,
   runtimeHttpConfig,
   runTask,
+  finalText,
+  deriveOutcomeEvidence,
+  inferRunMode,
+  synthesisDecision,
+  selectProposalCapabilityIds,
   type HyperTaskFile,
 } from '@hyper/cli';
-import { CONTRACT_VERSION, type LedgerEvent, type WorkflowProposal } from '@hyper/contracts';
+import { CONTRACT_VERSION, type LedgerEvent, type WorkflowProposal, type WorkflowRunResult } from '@hyper/contracts';
 import type { ModelDriver } from '@hyper/model';
 
 const roots: string[] = [];
@@ -44,6 +49,97 @@ afterEach(() => {
 });
 
 describe('practical CLI workflow', () => {
+  test('infers task depth when the client leaves execution strategy automatic', () => {
+    expect(inferRunMode('What time is it in Toronto?')).toBe('fast');
+    expect(inferRunMode('Research and compare current context engineering approaches with sources.')).toBe('reasoned');
+    expect(inferRunMode('Implement the fix, update the files, and run tests.')).toBe('agent');
+  });
+
+  test('derives task-specific evidence instead of accepting any successful action', () => {
+    const codingManifests = [
+      { id: 'workspace.file.read' },
+      { id: 'workspace.file.write' },
+      { id: 'workspace.process.run' },
+    ];
+    expect(deriveOutcomeEvidence('Implement the code fix and run tests.', codingManifests)).toEqual([
+      'effect:state.write',
+      'effect:process.execute',
+    ]);
+    expect(deriveOutcomeEvidence('Search the web and return a sourced summary.', [{ id: 'network.web.search' }]))
+      .toEqual(['capability:network.web.search']);
+    expect(deriveOutcomeEvidence('Inspect the repository without changing files.', [{ id: 'workspace.file.read' }]))
+      .toEqual(['capability:workspace.file.read']);
+  });
+
+  test('narrows the stateless proposal model to task-relevant tools without expanding authority', () => {
+    const manifests = [
+      { id: 'network.web.search', description: 'Search the public web.', effects: ['network.request'], requiredEffects: ['network.request'] },
+      { id: 'workspace.file.write', description: 'Write a workspace file.', effects: ['state.write'], requiredEffects: ['state.write'] },
+      { id: 'media.image.analyze', description: 'Analyze an image.', effects: ['state.read'], requiredEffects: ['state.read'] },
+    ] as unknown as Parameters<typeof selectProposalCapabilityIds>[1];
+    expect(selectProposalCapabilityIds(
+      'Search the web for recent Canadian budgeting pain points and do not write files.', manifests,
+    )).toEqual(['network.web.search']);
+    expect(selectProposalCapabilityIds('Hello, can you explain what you can help with?', manifests)).toEqual(manifests.map(item => item.id));
+  });
+
+  test('synthesizes verified web research even in fast mode and keeps a readable evidence fallback', () => {
+    const result = {
+      runId: 'run:web', status: 'completed', activeStrategyId: 'direct', reasonCodes: [], receiptHash: 'receipt:web',
+      steps: [{
+        step: 1, phase: 'verify', strategyId: 'direct', packetId: 'packet:web',
+        proposal: {
+          kind: 'action', strategyId: 'direct', hypothesis: 'Current sources expose the requested evidence',
+          expectedObservation: 'A bounded set of recent Canadian budgeting sources',
+          action: { capabilityId: 'web.search', input: { query: 'budgeting Canada' }, declaredEffects: ['network.request', 'state.read'] },
+        },
+        usage: { inputTokens: 10, outputTokens: 5, latencyMs: 1 },
+        outcome: {
+          status: 'completed', reasonCodes: [],
+          observation: {
+            id: 'observation:web', target: 'search://web', observedAt: now,
+            value: { query: 'budgeting Canada', results: [{ title: 'Bank of Canada', url: 'https://example.test/report', snippet: 'Household budgets remain strained.' }] },
+          },
+          verification: { passed: true, reasonCodes: [], evidence: [{ id: 'evidence:web', kind: 'observation', source: 'search://web', capturedAt: now }] },
+        },
+      }],
+    } as unknown as WorkflowRunResult;
+
+    expect(synthesisDecision(result, 'Search the web and summarize the evidence.', 'fast')).toEqual({
+      synthesize: true,
+      reason: 'natural_language_synthesis_required',
+    });
+    expect(finalText(result)).toContain('- Bank of Canada — https://example.test/report');
+    expect(finalText(result)).not.toContain('{"query"');
+  });
+
+  test('skips redundant synthesis only for verified artifacts or explicit operator answers', () => {
+    const base = {
+      runId: 'run:answer', status: 'completed', activeStrategyId: 'direct', reasonCodes: [], receiptHash: 'receipt:answer',
+      steps: [{
+        step: 1, phase: 'verify', strategyId: 'direct', packetId: 'packet:answer',
+        proposal: {
+          kind: 'action', strategyId: 'direct', hypothesis: 'The capability can produce the requested answer',
+          expectedObservation: 'A complete operator-facing answer',
+          action: { capabilityId: 'answer.generate', input: {}, declaredEffects: ['state.read'] },
+        },
+        usage: { inputTokens: 10, outputTokens: 5, latencyMs: 1 },
+        outcome: {
+          status: 'completed', reasonCodes: [],
+          observation: { id: 'observation:answer', target: 'answer://final', observedAt: now, value: { answer: 'This is a complete, verified operator-facing answer with sufficient detail.' } },
+          verification: { passed: true, reasonCodes: [], evidence: [{ id: 'evidence:answer', kind: 'observation', source: 'answer://final', capturedAt: now }] },
+        },
+      }],
+    } as unknown as WorkflowRunResult;
+    expect(synthesisDecision(base, 'Answer the question.', 'fast').reason).toBe('verified_observation_contains_operator_answer');
+
+    const artifact = structuredClone(base) as WorkflowRunResult;
+    const step = artifact.steps[0]!;
+    if (step.proposal.kind === 'action') step.proposal.action.declaredEffects = ['state.write'];
+    if (step.outcome?.observation) step.outcome.observation.value = { path: 'workspace/report.md' };
+    expect(synthesisDecision(artifact, 'Create and save a report.', 'fast').reason).toBe('verified_artifact_is_primary_answer');
+  });
+
   test('branches immutable prompt history, projects verified artifacts, and deletes session-owned projections', () => {
     const root = temporaryRoot();
     const store = new JsonOperatorStore(join(root, 'operator.json'));
@@ -417,6 +513,7 @@ describe('practical CLI workflow', () => {
       body: JSON.stringify({
         message: 'Research agent context implementations with full commented Python examples; use your own thinking.',
         profile: 'partner',
+        required_evidence: ['runtime_outcome_observed'],
       }),
     }));
     const frames = (await response.text()).split('\n').filter(line => line.startsWith('data: '))
@@ -523,6 +620,10 @@ describe('practical CLI workflow', () => {
       at: now,
       runId: 'run:b:prior',
     });
+    expect(store.recentMessages('session:b', { maxMessages: 1 })).toMatchObject([
+      { role: 'assistant', content: 'I will preserve this direction.' },
+    ]);
+    expect(store.recentMessages('session:b', { excludeRunId: 'run:b:prior' })).toEqual([]);
     store.commitMemory({
       id: 'verified:a',
       sourceRunId: 'run:a',
@@ -590,6 +691,58 @@ describe('practical CLI workflow', () => {
     expect(searchBody.results.length).toBeGreaterThan(0);
     expect(searchBody.results.every(result => result.sessionId === 'session:b')).toBeTrue();
     expect(searchBody.results.some(result => result.provenance.includes('run:b:prior'))).toBeTrue();
+  });
+
+  test('answers ordinary chat in one model call without entering the action workflow', async () => {
+    const root = temporaryRoot();
+    let responseCalls = 0;
+    let proposalCalls = 0;
+    const handler = createRuntimeHttpHandler({
+      port: 0,
+      workspace: root,
+      ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'),
+      provider: 'ollama',
+      model: 'test-model',
+      allowedExecutables: [],
+      allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose() {
+          proposalCalls += 1;
+          throw new Error('ordinary chat must not enter proposal planning');
+        },
+        async respond(request) {
+          responseCalls += 1;
+          expect(request.objective).toBe('Hi, what can you help me with?');
+          return {
+            answer: 'I can help you research, build, explain, and create polished deliverables.',
+            model: 'test:conversation',
+            usage: { inputTokens: 12, outputTokens: 10, latencyMs: 1 },
+          };
+        },
+      }),
+    });
+    const response = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Hi, what can you help me with?' }),
+    }));
+    const frames = (await response.text()).split('\n')
+      .filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6)) as Record<string, any>);
+    expect(responseCalls).toBe(1);
+    expect(proposalCalls).toBe(0);
+    expect(frames.some(frame => frame.event?.type === 'context.packet')).toBeFalse();
+    expect(frames.find(frame => frame.event?.type === 'respond.final')?.event.payload.text)
+      .toContain('research, build, explain');
+    const runId = frames.find(frame => frame.kind === 'meta')?.run_id as string;
+    const ledger = readFileSync(join(root, 'ledgers', `${runId}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(ledger.find(event => event.type === 'operator.run_started')?.payload.preparation).toMatchObject({
+      history: 'bounded_recent_only',
+      knowledgeRetrieval: 'skipped',
+      memoryRetrieval: 'skipped',
+      contextCompilation: 'skipped',
+    });
+    expect(ledger.find(event => event.type === 'operator.run_finished')?.payload.responseLane).toBe('conversation');
   });
 
   test('runs a versioned task file, writes a real file, and persists replay', async () => {
@@ -923,7 +1076,7 @@ describe('practical CLI workflow', () => {
       event: {
         payload: {
           objective: 'Read workspace/input.txt and verify it.',
-        legalCapabilityIds: ['workspace.file.read', 'workspace.directory.list', 'system.clock.read', 'session.knowledge.search'],
+        legalCapabilityIds: ['workspace.file.read', 'workspace.directory.list'],
           outputContract: ['action', 'pivot', 'ask', 'complete'],
           audit: { sourcesConsidered: 1 },
         },
@@ -1427,7 +1580,7 @@ describe('practical CLI workflow', () => {
         { id: 'groq', configured: true },
         { id: 'openrouter', configured: true },
         { id: 'nvidia', configured: true },
-        { id: 'deepseek', configured: true, default_model: 'deepseek-chat' },
+        { id: 'deepseek', configured: true, default_model: 'deepseek-v4-flash' },
         { id: 'mistral', configured: true, default_model: 'mistral-small-latest' },
         { id: 'opencode', configured: true, default_model: 'deepseek-v4-flash-free' },
         { id: 'lmstudio', configured: true },
@@ -1654,6 +1807,7 @@ describe('practical CLI workflow', () => {
     expect(capabilityIds).toEqual(expect.arrayContaining([
       'media.audio.transcribe.deepgram',
       'media.audio.synthesize.deepgram',
+      'media.voice.session.deepgram',
       'media.audio.transcribe.elevenlabs',
       'media.audio.synthesize.elevenlabs',
       'media.voice.session.elevenlabs',
@@ -1669,7 +1823,11 @@ describe('practical CLI workflow', () => {
     const issued = config.voiceSessionBroker!.issue('wss://api.elevenlabs.io/v1/convai/conversation?token=single-use');
     const claim = await handler(new Request(`http://runtime.local/api/media/voice-sessions/${issued.handle}/claim`, { method: 'POST' }));
     expect(claim.headers.get('cache-control')).toBe('no-store');
-    expect(await claim.json()).toEqual({ signed_url: 'wss://api.elevenlabs.io/v1/convai/conversation?token=single-use' });
+    expect(await claim.json()).toEqual({
+      provider: 'elevenlabs',
+      signed_url: 'wss://api.elevenlabs.io/v1/convai/conversation?token=single-use',
+      expires_at: issued.expiresAt,
+    });
     const replayedClaim = await handler(new Request(`http://runtime.local/api/media/voice-sessions/${issued.handle}/claim`, { method: 'POST' }));
     expect(replayedClaim.status).toBe(410);
   });

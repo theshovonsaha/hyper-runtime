@@ -13,6 +13,33 @@ import {
 } from '@hyper/cli';
 
 describe('provider intelligence and resource control', () => {
+  test('uses one natural-language model call for conversation without a proposal schema', async () => {
+    const requests: Array<{ system: string; user: string; format?: string }> = [];
+    const driver = new CanonicalModelDriver({
+      id: 'fixture', model: 'chat-model', endpoint: 'https://fixture.test/messages',
+      async generate(request) {
+        requests.push(request);
+        return { text: 'Hello! What would you like to work on?', usage: { inputTokens: 18, outputTokens: 9 } };
+      },
+    });
+    const result = await driver.respond({ objective: 'hi', operatorContext: 'Assistant: Welcome.' });
+    expect(result.answer).toBe('Hello! What would you like to work on?');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.format).toBe('text');
+    expect(requests[0]?.system).not.toContain('workflow proposal');
+  });
+
+  test('rejects a truncated conversational answer so routing can recover', async () => {
+    const driver = new CanonicalModelDriver({
+      id: 'fixture', model: 'chat-model',
+      async generate() {
+        return { text: 'A partial answer', stopReason: 'max_tokens', usage: { inputTokens: 8, outputTokens: 32 } };
+      },
+    });
+    await expect(driver.respond({ objective: 'Explain this fully.' }))
+      .rejects.toThrow('MODEL_OUTPUT_TRUNCATED:max_tokens');
+  });
+
   test('accounts for OpenAI-compatible cache and reasoning usage and sends explicit effort', async () => {
     let body: Record<string, any> = {};
     const transport = new OpenAICompatibleTransport('reasoning-model', 'secret', 'https://provider.test/v1', async (_input, init) => {
@@ -27,10 +54,55 @@ describe('provider intelligence and resource control', () => {
           completion_tokens_details: { reasoning_tokens: 20 },
         },
       });
-    });
+    }, 60_000, 'openai');
     const result = await transport.generate({ system: 'stable', user: 'dynamic', reasoningEffort: 'high', maxOutputTokens: 512 });
     expect(body).toMatchObject({ reasoning_effort: 'high', max_completion_tokens: 512 });
     expect(result.usage).toMatchObject({ inputTokens: 120, outputTokens: 30, cachedInputTokens: 80, reasoningTokens: 20, totalTokens: 150 });
+  });
+
+  test('uses provider-native compatible fields instead of one assumed OpenAI body', async () => {
+    const cases = [
+      { dialect: 'gemini' as const, effort: 'off' as const, expected: { reasoning_effort: 'none', max_completion_tokens: 256 } },
+      { dialect: 'groq' as const, effort: 'off' as const, expected: { reasoning_effort: 'none', max_tokens: 256 } },
+      { dialect: 'ollama' as const, effort: 'max' as const, expected: { reasoning_effort: 'high', max_tokens: 256 } },
+      { dialect: 'deepseek' as const, effort: 'max' as const, expected: { thinking: { type: 'enabled' }, reasoning_effort: 'max', max_tokens: 256 } },
+      { dialect: 'mistral' as const, effort: 'high' as const, expected: { reasoning_effort: 'high', max_tokens: 256 } },
+      { dialect: 'nvidia' as const, effort: 'high' as const, expected: { max_tokens: 256 } },
+      { dialect: 'openrouter' as const, effort: 'max' as const, expected: { reasoning: { effort: 'max' }, max_tokens: 256 } },
+      { dialect: 'llamacpp' as const, effort: 'off' as const, expected: { chat_template_kwargs: { enable_thinking: false }, max_tokens: 256 } },
+      { dialect: 'lmstudio' as const, effort: 'high' as const, expected: { max_tokens: 256 } },
+    ];
+    for (const item of cases) {
+      let body: Record<string, any> = {};
+      const transport = new OpenAICompatibleTransport('model', 'secret', 'https://provider.test/v1', async (_input, init) => {
+        body = JSON.parse(String(init?.body));
+        return Response.json({ choices: [{ message: { content: '{}' } }], usage: {} });
+      }, 60_000, item.dialect);
+      await transport.generate({ system: 'stable', user: 'dynamic', reasoningEffort: item.effort, maxOutputTokens: 256 });
+      expect(body).toMatchObject(item.expected);
+      if (item.dialect === 'nvidia' || item.dialect === 'lmstudio') expect(body.reasoning_effort).toBeUndefined();
+      if (item.dialect === 'mistral') expect(body.prompt_cache_key).toStartWith('hyper:');
+    }
+  });
+
+  test('retries transient provider failures but surfaces permanent provider diagnostics', async () => {
+    let attempts = 0;
+    const transient = new OpenAICompatibleTransport('flash', 'secret', 'https://provider.test/v1', async () => {
+      attempts += 1;
+      if (attempts < 3) return Response.json({ error: { message: 'temporarily overloaded' } }, { status: 503, headers: { 'retry-after': '0' } });
+      return Response.json({ choices: [{ message: { content: '{}' } }], usage: {} });
+    });
+    expect((await transient.generate({ system: 'stable', user: 'dynamic' })).text).toBe('{}');
+    expect(attempts).toBe(3);
+
+    let permanentAttempts = 0;
+    const permanent = new OpenAICompatibleTransport('bad-model', 'secret', 'https://provider.test/v1', async () => {
+      permanentAttempts += 1;
+      return Response.json({ error: { message: 'The model ID does not exist.' } }, { status: 400 });
+    });
+    await expect(permanent.generate({ system: 'stable', user: 'dynamic' }))
+      .rejects.toThrow('HTTP 400: The model ID does not exist.');
+    expect(permanentAttempts).toBe(1);
   });
 
   test('accounts for Anthropic cache usage and maps supported thinking budgets', async () => {
@@ -45,6 +117,18 @@ describe('provider intelligence and resource control', () => {
     const result = await transport.generate({ system: 'stable', user: 'dynamic', reasoningEffort: 'medium', maxOutputTokens: 4_096 });
     expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 2_048 });
     expect(result.usage).toMatchObject({ inputTokens: 90, outputTokens: 10, cachedInputTokens: 60, cacheWriteTokens: 20, totalTokens: 100 });
+  });
+
+  test('uses adaptive Anthropic thinking for current Claude generations', async () => {
+    let body: Record<string, any> = {};
+    const transport = new AnthropicMessagesTransport('claude-sonnet-4-7', 'secret', 'https://anthropic.test/v1', async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ content: [{ type: 'text', text: '{}' }], usage: { input_tokens: 1, output_tokens: 2, output_tokens_details: { thinking_tokens: 1 } } });
+    });
+    const result = await transport.generate({ system: 'stable', user: 'dynamic', reasoningEffort: 'high', maxOutputTokens: 4_096 });
+    expect(body).toMatchObject({ thinking: { type: 'adaptive' }, output_config: { effort: 'high' }, max_tokens: 4_096 });
+    expect(body.thinking.budget_tokens).toBeUndefined();
+    expect(result.usage.reasoningTokens).toBe(1);
   });
 
   test('fails preflight when the selected model context budget cannot hold input and output', async () => {

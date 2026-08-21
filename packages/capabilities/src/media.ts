@@ -517,7 +517,11 @@ export class ElevenLabsSpeechSynthesisCapability implements CapabilityAdapter<Sp
   }
 }
 
-interface BrokerSession { signedUrl: string; expiresAt: number }
+export type VoiceSessionClaim =
+  | { provider: 'elevenlabs'; signedUrl: string; expiresAt: string }
+  | { provider: 'deepgram'; accessToken: string; websocketUrl: string; expiresAt: string };
+
+interface BrokerSession { claim: VoiceSessionClaim; expiresAt: number }
 
 export class EphemeralVoiceSessionBroker {
   private readonly sessions = new Map<string, BrokerSession>();
@@ -529,15 +533,152 @@ export class EphemeralVoiceSessionBroker {
     }
     const handle = crypto.randomUUID();
     const expiresAt = Date.now() + Math.min(15 * 60_000, Math.max(30_000, ttlMs));
-    this.sessions.set(handle, { signedUrl: url.toString(), expiresAt });
+    const expiresAtIso = new Date(expiresAt).toISOString();
+    this.sessions.set(handle, {
+      claim: { provider: 'elevenlabs', signedUrl: url.toString(), expiresAt: expiresAtIso },
+      expiresAt,
+    });
     return { handle, expiresAt: new Date(expiresAt).toISOString() };
   }
 
-  claim(handle: string): string | undefined {
+  issueDeepgram(
+    accessToken: string,
+    ttlMs: number,
+    websocketUrl = 'wss://agent.deepgram.com/v1/agent/converse',
+  ): { handle: string; expiresAt: string } {
+    const url = new URL(websocketUrl);
+    if (
+      url.protocol !== 'wss:'
+      || !['agent.deepgram.com', 'api.deepgram.com', 'api.eu.deepgram.com', 'api.au.deepgram.com'].includes(url.hostname)
+    ) throw new Error('Voice provider returned an untrusted WebSocket URL.');
+    if (!/^[A-Za-z0-9._~-]{24,12000}$/.test(accessToken)) {
+      throw new Error('Voice provider returned an invalid temporary token.');
+    }
+    const handle = crypto.randomUUID();
+    const expiresAt = Date.now() + Math.min(60 * 60_000, Math.max(5_000, ttlMs));
+    const expiresAtIso = new Date(expiresAt).toISOString();
+    this.sessions.set(handle, {
+      claim: {
+        provider: 'deepgram',
+        accessToken,
+        websocketUrl: url.toString(),
+        expiresAt: expiresAtIso,
+      },
+      expiresAt,
+    });
+    return { handle, expiresAt: expiresAtIso };
+  }
+
+  claimEnvelope(handle: string): VoiceSessionClaim | undefined {
     const session = this.sessions.get(handle);
     this.sessions.delete(handle);
     if (!session || session.expiresAt <= Date.now()) return undefined;
-    return session.signedUrl;
+    return session.claim;
+  }
+
+  claim(handle: string): string | undefined {
+    const claimed = this.claimEnvelope(handle);
+    return claimed?.provider === 'elevenlabs' ? claimed.signedUrl : undefined;
+  }
+}
+
+export interface DeepgramVoiceSessionArgs extends Record<string, unknown> {
+  ttlSeconds?: number;
+  region?: 'global' | 'eu' | 'au';
+}
+
+export interface DeepgramVoiceSessionOptions {
+  apiKey: string;
+  broker: EphemeralVoiceSessionBroker;
+  baseUrl?: string;
+  timeoutMs?: number;
+  fetchImpl?: FetchLike;
+}
+
+/** Issues a short-lived, single-use browser credential for Deepgram's realtime
+ * voice APIs. The long-lived project key never enters an observation or claim. */
+export class DeepgramVoiceAgentSessionCapability implements CapabilityAdapter<DeepgramVoiceSessionArgs> {
+  readonly manifest: CapabilityManifest = {
+    id: 'media.voice.session.deepgram', version: '0.2.0',
+    description: 'Create an approved, one-time Deepgram realtime voice-agent credential handle.',
+    effects: ['network.request'], requiredEffects: ['network.request'],
+    targetPatterns: ['voice://deepgram/agent'], riskCeiling: 4,
+    approval: 'always', idempotent: false, verification: 'required',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ttlSeconds: { type: 'number' },
+        region: { type: 'string', enum: ['global', 'eu', 'au'] },
+      },
+      additionalProperties: false,
+    },
+  };
+  private readonly fetchImpl: FetchLike;
+  private readonly observations = new Map<string, Record<string, unknown>>();
+
+  constructor(private readonly options: DeepgramVoiceSessionOptions) {
+    if (!options.apiKey.trim()) throw new Error('Deepgram API key is required.');
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async execute(proposal: ActionProposal<DeepgramVoiceSessionArgs>, grant: CapabilityGrant): Promise<CapabilityExecution> {
+    const invalid = validateGrant(proposal, grant, this.manifest, 'network.request');
+    if (invalid) return invalid;
+    try {
+      if (proposal.target !== 'voice://deepgram/agent') throw new Error('Deepgram voice target does not match the agent endpoint.');
+      const ttlSeconds = Math.min(3600, Math.max(5, Math.round(
+        typeof proposal.args.ttlSeconds === 'number' ? proposal.args.ttlSeconds : 30,
+      )));
+      const response = await this.fetchImpl(new URL('/v1/auth/grant', this.options.baseUrl ?? 'https://api.deepgram.com'), {
+        method: 'POST',
+        headers: {
+          authorization: `Token ${this.options.apiKey}`,
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        body: JSON.stringify({ ttl_seconds: ttlSeconds }),
+        signal: AbortSignal.timeout(this.options.timeoutMs ?? 15_000),
+      });
+      const body = await responseJson(response, 100_000);
+      const accessToken = cleanString(body.access_token, 12_000);
+      const expiresIn = typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
+        ? Math.min(ttlSeconds, Math.max(1, body.expires_in))
+        : ttlSeconds;
+      if (!accessToken) throw new Error('Deepgram returned no temporary access token.');
+      const region = proposal.args.region ?? 'global';
+      const websocketUrl = region === 'eu'
+        ? 'wss://api.eu.deepgram.com/v1/agent/converse'
+        : region === 'au'
+          ? 'wss://api.au.deepgram.com/v1/agent/converse'
+          : 'wss://agent.deepgram.com/v1/agent/converse';
+      const issued = this.options.broker.issueDeepgram(accessToken, expiresIn * 1_000, websocketUrl);
+      const observation = {
+        provider: 'deepgram',
+        sessionHandle: issued.handle,
+        expiresAt: issued.expiresAt,
+        claimPath: `/api/media/voice-sessions/${issued.handle}/claim`,
+        websocketUrl,
+        credentialPersisted: false,
+        singleUse: true,
+      };
+      this.observations.set(proposal.id, observation);
+      return {
+        success: true,
+        summary: 'Created a one-time Deepgram voice-agent credential handle; the temporary token was not persisted.',
+        evidence: [{ id: `tool:${proposal.id}`, kind: 'tool_result', source: this.manifest.id, digest: digest(observation) }],
+      };
+    } catch (error) {
+      return executionFailure(error, 'DEEPGRAM_VOICE_SESSION_FAILED');
+    }
+  }
+
+  async observe(proposal: ActionProposal<DeepgramVoiceSessionArgs>): Promise<Observation> {
+    const value = this.observations.get(proposal.id);
+    return { target: proposal.target, exists: !!value, value, evidence: [{ id: `observation:${proposal.id}`, kind: 'observation', source: this.manifest.id, digest: digest(value ?? { missing: true }) }] };
+  }
+
+  async verify(_proposal: ActionProposal<DeepgramVoiceSessionArgs>, execution: CapabilityExecution, observation: Observation): Promise<VerificationResult> {
+    return observedVerification(execution, observation, 'EPHEMERAL_VOICE_SESSION_HANDLE_OBSERVED', 'VOICE_SESSION_NOT_OBSERVED');
   }
 }
 

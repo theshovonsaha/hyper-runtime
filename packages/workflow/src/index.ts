@@ -52,6 +52,25 @@ export interface CompletionOracle {
   verify(input: CompletionOracleInput): Promise<CompletionAssessment>;
 }
 
+/**
+ * Evidence obligations may be bound to the effect or capability that must
+ * actually have crossed the verified runtime boundary. Unqualified names stay
+ * backward compatible with existing task files, but qualified obligations
+ * cannot be satisfied by an unrelated successful action.
+ */
+export function actionSatisfiesEvidenceRequirement(
+  action: ActionProposal,
+  requirement: string,
+): boolean {
+  if (requirement.startsWith('effect:')) {
+    return action.declaredEffects.includes(requirement.slice('effect:'.length) as ActionProposal['declaredEffects'][number]);
+  }
+  if (requirement.startsWith('capability:')) {
+    return action.capabilityId === requirement.slice('capability:'.length);
+  }
+  return true;
+}
+
 export class RequiredEvidenceCompletionOracle implements CompletionOracle {
   async verify(input: CompletionOracleInput): Promise<CompletionAssessment> {
     const missingObserved = input.intent.requiredEvidence.filter(
@@ -65,6 +84,7 @@ export class RequiredEvidenceCompletionOracle implements CompletionOracle {
         || !step.outcome.verification?.passed
       ) continue;
       for (const requirement of step.proposal.action.expectedEvidence) {
+        if (!actionSatisfiesEvidenceRequirement(step.proposal.action, requirement)) continue;
         const evidenceIds = verifiedEvidenceByRequirement.get(requirement) ?? new Set<string>();
         for (const evidence of step.outcome.verification.evidence) evidenceIds.add(evidence.id);
         verifiedEvidenceByRequirement.set(requirement, evidenceIds);
@@ -122,6 +142,12 @@ export interface WorkflowDefinition {
   sources: ContextSource[];
   initialStrategyId: string;
   focusTags?: string[];
+  /** A request-specific subset shown to the proposal model. This narrows the
+   * model's choice surface without expanding or replacing intent authority. */
+  proposalCapabilityIds?: string[];
+  /** Permits the completion oracle to finish immediately after a verified
+   * action. Enable only for requests whose bounded plan is known to be one-step. */
+  completeAfterVerifiedAction?: boolean;
   tokenBudget?: number;
   maxSteps?: number;
   maxWallTimeMs?: number;
@@ -270,7 +296,9 @@ export function rebuildWorkflowResumeSeedFromEvents(
     steps.push(reconstructed);
     if (causal) causalHistory.push(causal);
     if (outcome.status === 'completed' && outcome.verification?.passed) {
-      for (const evidence of proposal.action.expectedEvidence) satisfiedEvidence.add(evidence);
+      for (const evidence of proposal.action.expectedEvidence) {
+        if (actionSatisfiesEvidenceRequirement(proposal.action, evidence)) satisfiedEvidence.add(evidence);
+      }
     }
   }
   if (!checkpointEvent && steps.length === 0) return undefined;
@@ -388,8 +416,11 @@ function verifiedCompletionEvidence(
       step.proposal.kind !== 'action'
       || step.outcome?.status !== 'completed'
       || !step.outcome.verification?.passed
-      || !step.proposal.action.expectedEvidence.some(value => required.has(value))
     ) return [];
+    const action = step.proposal.action;
+    if (!action.expectedEvidence.some(value =>
+      required.has(value) && actionSatisfiesEvidenceRequirement(action, value),
+    )) return [];
     return step.outcome.verification.evidence.map(evidence => evidence.id);
   }))];
 }
@@ -697,7 +728,10 @@ export class WorkflowRunner {
       const registeredCapabilityManifests = this.options.capabilities.manifests();
       const authorizedCapabilities = definition.intent.authorizedCapabilities;
       const capabilityManifests = authorizedCapabilities
-        ? registeredCapabilityManifests.filter(manifest => authorizedCapabilities.includes(manifest.id))
+        ? registeredCapabilityManifests.filter(manifest =>
+            authorizedCapabilities.includes(manifest.id)
+            && (!definition.proposalCapabilityIds || definition.proposalCapabilityIds.includes(manifest.id)),
+          )
         : registeredCapabilityManifests;
       this.ledger.append(definition.runId, 'context.compiled', {
         step: stepNumber,
@@ -1052,6 +1086,7 @@ export class WorkflowRunner {
         proposal: proposal.action,
         capability,
         approval: definition.approvalFor?.(proposal.action.id),
+        signal: definition.signal,
       });
       if (outcome.status === 'awaiting_approval' && definition.requestApprovalFor) {
         this.ledger.append(definition.runId, 'workflow.approval_requested', {
@@ -1077,6 +1112,7 @@ export class WorkflowRunner {
             proposal: proposal.action,
             capability,
             approval,
+            signal: definition.signal,
           });
         }
       }
@@ -1131,7 +1167,9 @@ export class WorkflowRunner {
       }
       if (outcome.status === 'completed') {
         for (const requirement of proposal.action.expectedEvidence) {
-          satisfiedEvidence.add(requirement);
+          if (actionSatisfiesEvidenceRequirement(proposal.action, requirement)) {
+            satisfiedEvidence.add(requirement);
+          }
         }
       }
 
@@ -1155,6 +1193,37 @@ export class WorkflowRunner {
       const observed = observationSource(definition.runId, stepNumber, outcome, now);
       if (observed) sources.push(observed);
       sources.push(diagnosticSource(definition.runId, stepNumber, causal, progress, now));
+
+      if (
+        definition.completeAfterVerifiedAction
+        && outcome.status === 'completed'
+        && definition.intent.requiredEvidence.every(value => satisfiedEvidence.has(value))
+      ) {
+        const completionProposal: WorkflowCompleteProposal = {
+          kind: 'complete',
+          strategyId: activeStrategyId,
+          evidenceRefs: verifiedCompletionEvidence(definition.intent.requiredEvidence, steps),
+        };
+        const completion = await this.completionOracle.verify({
+          intent: definition.intent,
+          proposal: completionProposal,
+          satisfiedEvidence: [...satisfiedEvidence],
+          steps,
+        });
+        this.ledger.append(definition.runId, 'workflow.completion_checked', {
+          step: stepNumber,
+          passed: completion.passed,
+          reasonCodes: completion.reasonCodes,
+          evidence: completion.evidence,
+          deterministicFastPath: true,
+        });
+        if (completion.passed) {
+          return this.finish(definition.runId, 'completed', steps, activeStrategyId, {
+            completion,
+            reasonCodes: ['VERIFIED_SINGLE_ACTION_FAST_PATH', 'COMPLETION_ORACLE_PASSED'],
+          });
+        }
+      }
 
       if (outcome.status === 'execution_failed' || outcome.status === 'verification_failed') {
         const codes = outcomeCodes(outcome);

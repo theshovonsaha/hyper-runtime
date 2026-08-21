@@ -12,6 +12,7 @@ import {
   ListDirectoryCapability,
   DeepgramSpeechSynthesisCapability,
   DeepgramTranscriptionCapability,
+  DeepgramVoiceAgentSessionCapability,
   ElevenLabsSpeechSynthesisCapability,
   ElevenLabsTranscriptionCapability,
   ElevenLabsVoiceAgentSessionCapability,
@@ -35,6 +36,7 @@ import {
   CONTRACT_VERSION,
   type Approval,
   type CapabilityAdapter,
+  type CapabilityManifest,
   type ContextSource,
   type Effect,
   type IntentContract,
@@ -63,6 +65,7 @@ import {
   type ModelRuntimeProfile,
   type ModelRoutingMode,
   type ReasoningEffort,
+  type OpenAICompatibleDialect,
 } from '@hyper/model';
 import { createModelDriver, type ModelSelectionOptions } from './run';
 import { LocalInferenceAdmissionController, selectQuantizedModel } from './local-inference';
@@ -325,6 +328,7 @@ const PROFILE_CAPABILITIES: Record<RuntimeProfile, string[]> = {
     'system.clock.read',
     'media.audio.transcribe.deepgram',
     'media.audio.synthesize.deepgram',
+    'media.voice.session.deepgram',
     'media.audio.transcribe.elevenlabs',
     'media.audio.synthesize.elevenlabs',
     'media.voice.session.elevenlabs',
@@ -336,6 +340,50 @@ const PROFILE_CAPABILITIES: Record<RuntimeProfile, string[]> = {
   // explicit marker, not an unrestricted wildcard or an authority bypass.
   partner: [],
 };
+
+/** Deterministically narrows the schemas sent to a stateless proposal model.
+ * Intent authority remains unchanged and the runtime still rechecks policy. */
+function taskRelevantCapabilityIds(
+  objective: string,
+  manifests: CapabilityManifest[],
+): string[] {
+  const text = objective.toLowerCase();
+  const selected = new Set<string>();
+  const add = (...ids: string[]) => ids.forEach(id => {
+    if (manifests.some(manifest => manifest.id === id)) selected.add(id);
+  });
+  if (/\b(web|online|internet|search|research|recent|current|latest|source|citation|news)\b/.test(text)) add('network.web.search');
+  if (/\b(file|folder|directory|workspace|repository|repo|codebase|source code|uploaded|attachment)\b/.test(text)) {
+    add('workspace.file.read', 'workspace.directory.list');
+  }
+  if (/\b(memory|context|uploaded|attachment|knowledge|recall)\b/.test(text)) add('session.knowledge.search');
+  if (/\b(time|date|today|now|timestamp|schedule)\b/.test(text)) add('system.clock.read');
+  if (/\b(audio|speech|voice|transcri|listen)\w*\b/.test(text)) {
+    add('media.audio.transcribe.deepgram', 'media.audio.transcribe.elevenlabs',
+      'media.audio.synthesize.deepgram', 'media.audio.synthesize.elevenlabs',
+      'media.voice.session.deepgram', 'media.voice.session.elevenlabs');
+  }
+  if (/\b(image|photo|picture|visual|diagram|illustration)\b/.test(text)) add('media.image.analyze', 'media.image.generate');
+  const forbidsFileWrites = /\b(?:do not|don't|without|never)\s+(?:write|create|edit|modify|change|save)(?:\s+any)?\s+files?\b/.test(text);
+  if (!forbidsFileWrites && /\b(write|create|edit|modify|change|save|implement|build|generate)(?:s|ed|ing)?\b/.test(text)) add('workspace.file.write');
+  if (/\b(run|execute|test|typecheck|lint|compile|build|install|command|cli|shell|terminal)\w*\b/.test(text)) add('workspace.process.run');
+  const objectiveTerms = new Set(text.match(/[a-z0-9][a-z0-9._-]{3,}/g) ?? []);
+  for (const manifest of manifests) {
+    if (selected.has(manifest.id)) continue;
+    if (!manifest.id.startsWith('custom.') && !manifest.id.startsWith('mcp.') && !manifest.id.startsWith('channel.')) continue;
+    const metadata = `${manifest.id} ${manifest.description ?? ''}`.toLowerCase();
+    if ([...objectiveTerms].some(term => metadata.includes(term))) selected.add(manifest.id);
+  }
+  return [...selected];
+}
+
+export function selectProposalCapabilityIds(
+  objective: string,
+  manifests: CapabilityManifest[],
+): string[] {
+  const selected = taskRelevantCapabilityIds(objective, manifests);
+  return selected.length > 0 ? selected : manifests.map(manifest => manifest.id);
+}
 
 const ALL_EFFECTS: Effect[] = [
   'state.read',
@@ -411,6 +459,22 @@ function reasoningEffort(value: unknown): ReasoningEffort | undefined {
     : undefined;
 }
 
+function providerDialect(provider: ProviderConfiguration): OpenAICompatibleDialect {
+  if (provider.transport === 'ollama') return 'ollama';
+  const id = provider.id.toLowerCase();
+  if (id.includes('gemini')) return 'gemini';
+  if (id.includes('groq')) return 'groq';
+  if (id.includes('deepseek')) return 'deepseek';
+  if (id.includes('mistral')) return 'mistral';
+  if (id.includes('nvidia')) return 'nvidia';
+  if (id.includes('opencode')) return 'opencode';
+  if (id.includes('openrouter')) return 'openrouter';
+  if (id.includes('lmstudio') || id.includes('lm-studio')) return 'lmstudio';
+  if (id.includes('llamacpp') || id.includes('llama.cpp')) return 'llamacpp';
+  if (id === 'openai' || provider.baseUrl?.includes('api.openai.com')) return 'openai';
+  return 'generic';
+}
+
 function configuredModelProfile(
   provider: ProviderConfiguration,
   model: string,
@@ -422,6 +486,8 @@ function configuredModelProfile(
     maxOutputTokens: profile.maxOutputTokens,
     reasoningEfforts: [...profile.reasoningEfforts],
     defaultReasoningEffort: profile.defaultReasoningEffort,
+    reasoningMode: profile.reasoningMode,
+    structuredOutput: profile.structuredOutput,
     tier: profile.tier,
     inputCostPerMillionUsd: profile.inputCostPerMillionUsd,
     outputCostPerMillionUsd: profile.outputCostPerMillionUsd,
@@ -433,6 +499,7 @@ function providerSelection(
   providerId: RuntimeProviderId,
   model?: string,
   requestedReasoningEffort?: ReasoningEffort,
+  discoveredProfile?: ModelRuntimeProfile,
 ): ModelSelectionOptions {
   const provider = providerConfigurations(config).find(item => item.id === providerId);
   if (!provider?.configured) throw new Error(`Provider ${providerId} is not configured.`);
@@ -446,7 +513,8 @@ function providerSelection(
     environment: config.environment,
     modelTimeoutMs: config.modelTimeoutMs,
     reasoningEffort: requestedReasoningEffort,
-    modelProfile: configuredModelProfile(provider, selectedModel),
+    modelProfile: configuredModelProfile(provider, selectedModel) ?? discoveredProfile,
+    providerDialect: providerDialect(provider),
   };
 }
 
@@ -515,6 +583,14 @@ async function discoverProviderModels(config: RuntimeHttpConfig, provider: Provi
     const details = item.details && typeof item.details === 'object'
       ? item.details as Record<string, unknown>
       : {};
+    const reasoningMetadata = item.reasoning && typeof item.reasoning === 'object'
+      ? item.reasoning as Record<string, unknown>
+      : {};
+    const advertisedEfforts = Array.isArray(reasoningMetadata.supported_efforts)
+      ? reasoningMetadata.supported_efforts.filter((value): value is ReasoningEffort =>
+          value === 'low' || value === 'medium' || value === 'high' || value === 'max',
+        )
+      : [];
     const discoveredContext = [item.context_window, item.context_length, item.max_context_length, item.input_token_limit]
       .find(value => typeof value === 'number' && Number.isFinite(value) && value > 0) as number | undefined;
     const discoveredOutput = [item.max_output_tokens, item.output_token_limit]
@@ -527,7 +603,13 @@ async function discoverProviderModels(config: RuntimeHttpConfig, provider: Provi
       size: typeof item.size === 'number' ? item.size : undefined,
       context_window: configuredProfile?.contextWindow ?? discoveredContext ?? null,
       max_output_tokens: configuredProfile?.maxOutputTokens ?? discoveredOutput ?? null,
-      reasoning_efforts: configuredProfile?.reasoningEfforts ?? [],
+      reasoning_efforts: configuredProfile?.reasoningEfforts ?? advertisedEfforts,
+      reasoning_mandatory: reasoningMetadata.mandatory === true,
+      reasoning_default: typeof reasoningMetadata.default_effort === 'string'
+        ? reasoningMetadata.default_effort
+        : configuredProfile?.defaultReasoningEffort ?? null,
+      reasoning_mode: configuredProfile?.reasoningMode ?? null,
+      structured_output: configuredProfile?.structuredOutput ?? null,
       tier: configuredProfile?.tier ?? null,
       quantization: configuredProfile?.quantization
         ?? (typeof details.quantization_level === 'string' ? details.quantization_level : null),
@@ -536,7 +618,7 @@ async function discoverProviderModels(config: RuntimeHttpConfig, provider: Provi
       limitations: [
         ...(configuredProfile || discoveredContext ? [] : ['context_window_unknown']),
         ...(configuredProfile || discoveredOutput ? [] : ['max_output_tokens_unknown']),
-        ...(configuredProfile?.reasoningEfforts.length ? [] : ['reasoning_effort_not_advertised']),
+        ...(configuredProfile?.reasoningEfforts.length || advertisedEfforts.length ? [] : ['reasoning_effort_not_advertised']),
       ],
     }];
   }).sort((a, b) => a.name.localeCompare(b.name));
@@ -654,36 +736,43 @@ async function createRuntimeModelDriver(
   selections: ModelRouteSelection[],
   mode: ModelRoutingMode,
   requestedReasoningEffort: ReasoningEffort | undefined,
-  onFailure: (failure: { operation: 'propose' | 'synthesize'; routeId: string; error: string }) => void,
-  onRoute: (attempt: { operation: 'propose' | 'synthesize'; routeId: string; pass: number; preferred: boolean; attempt: number }) => void,
+  onFailure: (failure: { operation: 'propose' | 'synthesize' | 'respond'; routeId: string; error: string }) => void,
+  onRoute: (attempt: { operation: 'propose' | 'synthesize' | 'respond'; routeId: string; pass: number; preferred: boolean; attempt: number }) => void,
   onHealth: (event: { routeId: string; pass: number; status: 'opened' | 'skipped' | 'recovered'; consecutiveFailures: number; cooldownUntilPass: number }) => void,
+  preflightRoute?: (route: ModelRouteSelection, index: number) => Promise<void>,
+  onPreflightFailure?: (failure: { routeId: string; error: string }) => void,
+  discoveredProfileFor?: (route: ModelRouteSelection) => ModelRuntimeProfile | undefined,
 ): Promise<ModelDriver> {
   const routes: Array<{ id: string; driver: ModelDriver }> = [];
   for (const [index, route] of selections.entries()) {
     const routeId = `${index + 1}:${route.provider}/${route.model}`;
     try {
-      const selection = providerSelection(config, route.provider, route.model, requestedReasoningEffort);
+      await preflightRoute?.(route, index);
+      const selection = providerSelection(
+        config, route.provider, route.model, requestedReasoningEffort, discoveredProfileFor?.(route),
+      );
       const driver = config.modelDriverFactory
         ? await config.modelDriverFactory(selection)
         : await createModelDriver(selection);
       routes.push({ id: routeId, driver });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      onFailure({
-        operation: 'propose',
-        routeId,
-        error: message,
-      });
-      routes.push({
+      if (index > 0 && onPreflightFailure) onPreflightFailure({ routeId, error: message });
+      else onFailure({ operation: 'propose', routeId, error: message });
+      if (index === 0) routes.push({
         id: routeId,
         driver: {
           async propose() { throw new Error(`ROUTE_INITIALIZATION_FAILED:${message}`); },
           async synthesize() { throw new Error(`ROUTE_INITIALIZATION_FAILED:${message}`); },
+          async respond() { throw new Error(`ROUTE_INITIALIZATION_FAILED:${message}`); },
         },
       });
     }
   }
   if (routes.length === 0) throw new Error('No configured model route could be initialized.');
+  if (requiredRouteCount(mode) !== undefined && routes.length !== selections.length) {
+    throw new Error(`${mode} routing cannot start because one or more required routes failed provider/model preflight.`);
+  }
   return new RoutedModelDriver(routes, {
     mode,
     onFailure,
@@ -1001,6 +1090,7 @@ function capabilityLabel(value: unknown): string {
     'network.http.get': 'approved web request',
     'media.audio.transcribe.deepgram': 'Deepgram transcription',
     'media.audio.synthesize.deepgram': 'Deepgram speech generator',
+    'media.voice.session.deepgram': 'Deepgram voice agent',
     'media.audio.transcribe.elevenlabs': 'ElevenLabs transcription',
     'media.audio.synthesize.elevenlabs': 'ElevenLabs speech generator',
     'media.voice.session.elevenlabs': 'ElevenLabs voice agent',
@@ -1019,6 +1109,7 @@ function actionTitle(value: unknown): string {
     'network.http.get': 'Requesting approved web data',
     'media.audio.transcribe.deepgram': 'Transcribing workspace audio with Deepgram',
     'media.audio.synthesize.deepgram': 'Generating speech with Deepgram',
+    'media.voice.session.deepgram': 'Starting a Deepgram voice-agent session',
     'media.audio.transcribe.elevenlabs': 'Transcribing workspace audio with ElevenLabs',
     'media.audio.synthesize.elevenlabs': 'Generating speech with ElevenLabs',
     'media.voice.session.elevenlabs': 'Starting an ElevenLabs voice-agent session',
@@ -1148,7 +1239,7 @@ export function adaptLedgerEvent(event: LedgerEvent, options: UiEventProjectionO
         `Working toward “${summary(payload.objective || 'the requested outcome', 120)}” with up to ${payload.maxSteps ?? 12} bounded steps.`, payload)];
     case 'operator.run_started':
       return [projectedEvent(base, 'capability', 'intake', `${String(payload.profile || 'inspect')} access selected`,
-        `${String(payload.provider || 'configured provider')} · ${String(payload.model || 'configured model')} · ${(payload.authorizedCapabilities as unknown[] | undefined)?.length ?? 0} approved tools.`, payload)];
+        `${String(payload.provider || 'configured provider')} · ${String(payload.model || 'configured model')} · ${(payload.authorizedCapabilities as unknown[] | undefined)?.length ?? 0} authorized tools; ${(payload.modelVisibleCapabilities as unknown[] | undefined)?.length ?? (payload.authorizedCapabilities as unknown[] | undefined)?.length ?? 0} task-relevant schema(s) sent to the model.`, payload)];
     case 'context.compiled':
       return [projectedEvent(base, 'context.packet', 'context', `Context prepared for step ${payload.step ?? '?'}`,
         `${(payload.includedSourceIds as unknown[] | undefined)?.length ?? 0} relevant sources selected for ${String(payload.phase || 'this step')} (~${payload.estimatedTokens ?? 0} tokens).`, payload)];
@@ -1184,12 +1275,17 @@ export function adaptLedgerEvent(event: LedgerEvent, options: UiEventProjectionO
       return events;
     }
     case 'model.proposal_failed':
+      return [projectedEvent(base, 'model.response', 'warning', 'Model pass failed; recovery scheduled',
+        `${summary(payload.reason ?? 'No configured model returned a valid proposal.')} No effect was executed; the checkpoint remains available for a bounded repair pass.`, payload)];
     case 'model.proposal_rejected':
       return [projectedEvent(base, 'model.response', 'error', 'Model proposal was rejected',
         `${summary(payload.reason ?? readableCodes(payload.reasonCode) ?? 'The proposal was invalid.')} The runtime did not execute it.`, payload)];
     case 'model.route_failed':
       return [projectedEvent(base, 'model.response', 'model', `${String(payload.routeId || 'A model provider')} did not respond`,
         `Trying the next configured provider/model pair. ${summary(payload.error || payload.reason || '', 140)}`.trim(), payload)];
+    case 'model.route_preflight_failed':
+      return [projectedEvent(base, 'model.response', 'warning', 'Unavailable fallback omitted',
+        `${String(payload.routeId || 'A fallback route')} failed model/catalog preflight and was removed before inference. ${summary(payload.error || '', 140)}`.trim(), payload)];
     case 'model.route_selected':
       return [projectedEvent(base, 'model.request', 'model', payload.preferred ? 'Scheduled model pass selected' : 'Fallback model selected',
         `${String(payload.routeId || 'model route')} · pass ${payload.pass ?? '?'} · attempt ${payload.attempt ?? '?'}. Context and authority are unchanged.`, payload)];
@@ -1284,7 +1380,7 @@ export function adaptLedgerEvent(event: LedgerEvent, options: UiEventProjectionO
         `${readableTarget(payload.target)} is linked to its verified action and can be opened from this session.`, payload)];
     case 'operator.run_cancelled':
       return [projectedEvent(base, 'run.cancelled', 'done', 'Run cancelled cleanly',
-        `${payload.reconciledSteps ?? 0} completed step(s) were retained and any observed effects remain in the canonical trail.`, payload)];
+        `${payload.reconciledSteps ?? 0} completed step(s) were retained and any observed effects remain in the canonical trail.${(payload.modelAudit as Record<string, unknown> | undefined)?.calls !== undefined ? ` ${(payload.modelAudit as Record<string, unknown>).calls} model call(s) were made.` : ''}`, payload)];
     case 'operator.run_failed':
       return [projectedEvent(base, 'run.error', 'error', 'Run stopped unexpectedly',
         summary(payload.reason || 'The runtime stopped before it could commit a terminal outcome.'), payload)];
@@ -1296,7 +1392,9 @@ export function adaptLedgerEvent(event: LedgerEvent, options: UiEventProjectionO
       }
       return [projectedEvent(base, status === 'completed' ? 'run.end' : 'run.error', status === 'completed' ? 'done' : 'error',
         status === 'completed' ? 'Run completed successfully' : `Run stopped: ${status.replaceAll('_', ' ')}`,
-        status === 'completed' ? 'The requested outcome was observed, verified, answered, and committed to the ledger.' : 'Inspect the preceding event for the exact failure and preserved evidence.', payload)];
+        status === 'completed'
+          ? `The requested outcome was observed, verified, answered, and committed to the ledger.${(payload.modelAudit as Record<string, unknown> | undefined)?.calls !== undefined ? ` ${(payload.modelAudit as Record<string, unknown>).calls} model call(s) total.` : ''}`
+          : 'Inspect the preceding event for the exact failure and preserved evidence.', payload)];
     }
     default:
       return [projectedEvent(base, event.type, 'context', event.type.split('.').map(value => value.replaceAll('_', ' ')).join(' · '),
@@ -1378,12 +1476,37 @@ function groundedObservations(result: WorkflowRunResult): GroundedObservation[] 
   });
 }
 
-function finalText(result: WorkflowRunResult): string {
+function readableObservedValue(value: unknown): string {
+  if (!value || typeof value !== 'object') return summary(value, 500);
+  const record = value as Record<string, unknown>;
+  if (typeof record.answer === 'string' && record.answer.trim()) return record.answer.trim();
+  if (Array.isArray(record.results)) {
+    const sources = record.results.flatMap((item, index) => {
+      if (!item || typeof item !== 'object') return [];
+      const source = item as Record<string, unknown>;
+      const title = typeof source.title === 'string' && source.title.trim()
+        ? source.title.trim()
+        : `Source ${index + 1}`;
+      const url = typeof source.url === 'string' ? source.url.trim() : '';
+      const snippet = typeof source.snippet === 'string' ? summary(source.snippet.trim(), 320) : '';
+      return [`- ${title}${url ? ` — ${url}` : ''}${snippet ? `\n  ${snippet}` : ''}`];
+    }).slice(0, 8);
+    if (sources.length > 0) {
+      const query = typeof record.query === 'string' && record.query.trim()
+        ? `Search: ${record.query.trim()}\n\n`
+        : '';
+      return `${query}${sources.join('\n')}`;
+    }
+  }
+  return summary(value, 500);
+}
+
+export function finalText(result: WorkflowRunResult): string {
   if (result.status === 'completed') {
     const observations = result.steps.flatMap(step =>
       step.outcome?.observation?.value === undefined
         ? []
-        : [summary(step.outcome.observation.value, 500)],
+        : [readableObservedValue(step.outcome.observation.value)],
     );
     return `Completed with verified observed state.${observations.length ? `\n\nObserved:\n${observations.join('\n')}` : ''}\n\nVerification establishes the recorded state transition; it does not independently prove every semantic claim contained in external data.`;
   }
@@ -1398,7 +1521,6 @@ export function synthesisDecision(
   runMode: 'fast' | 'reasoned' | 'agent',
 ): { synthesize: boolean; reason: string } {
   if (result.status !== 'completed') return { synthesize: false, reason: 'workflow_not_completed' };
-  if (runMode === 'fast') return { synthesize: false, reason: 'fast_mode_verified_runtime_answer' };
   const verifiedWrites = result.steps.filter(step =>
     step.outcome?.status === 'completed'
     && step.outcome.verification?.passed === true
@@ -1409,7 +1531,60 @@ export function synthesisDecision(
     verifiedWrites.length > 0
     && /\b(create|write|save|generate|implement|update|edit|build)\w*\b/i.test(objective)
   ) return { synthesize: false, reason: 'verified_artifact_is_primary_answer' };
+  const explicitAnswer = result.steps.some(step => {
+    if (step.outcome?.verification?.passed !== true || !step.outcome.observation) return false;
+    const value = step.outcome.observation.value;
+    return !!value && typeof value === 'object'
+      && typeof (value as Record<string, unknown>).answer === 'string'
+      && ((value as Record<string, unknown>).answer as string).trim().length >= 40;
+  });
+  if (explicitAnswer) return { synthesize: false, reason: 'verified_observation_contains_operator_answer' };
   return { synthesize: true, reason: 'natural_language_synthesis_required' };
+}
+
+export function inferRunMode(objective: string): 'fast' | 'reasoned' | 'agent' {
+  const normalized = objective.toLowerCase();
+  if (/\b(implement|build|create|write|edit|fix|refactor|migrate|debug|deploy|install|run tests?|change (?:the )?(?:code|repo|project|files?))\b/.test(normalized)) {
+    return 'agent';
+  }
+  if (/\b(research|investigate|analy[sz]e|audit|compare|evaluate|plan|design|architect|explain why|evidence|sources?|tradeoffs?)\b/.test(normalized)) {
+    return 'reasoned';
+  }
+  return 'fast';
+}
+
+/** Derives outcome evidence from the requested work, not from whichever action
+ * happens to succeed first. Explicit task-file evidence still takes precedence. */
+export function deriveOutcomeEvidence(
+  objective: string,
+  manifests: Pick<CapabilityManifest, 'id'>[],
+): string[] {
+  const text = objective.toLowerCase();
+  const available = new Set(manifests.map(manifest => manifest.id));
+  const required: string[] = [];
+  const add = (requirement: string) => {
+    if (!required.includes(requirement)) required.push(requirement);
+  };
+  const requestsMutation = /\b(implement|build|create|write|edit|fix|refactor|migrate|update|modify|generate|save)(?:s|ed|ing)?\b/.test(text)
+    && !/\b(?:do not|don't|without|never)\s+(?:write|create|edit|modify|change|save)(?:\s+any)?\s+files?\b/.test(text);
+  const codingTask = /\b(code|codebase|repo(?:sitory)?|bug|test|typecheck|lint|compile|package|dependency|frontend|backend|api|component|function|class|typescript|javascript|python|rust|golang)\b/.test(text)
+    || /\b(implement|refactor|debug|migrat)\w*\b/.test(text);
+
+  if (available.has('network.web.search')) add('capability:network.web.search');
+  if (available.has('session.knowledge.search')) add('capability:session.knowledge.search');
+  if (requestsMutation && available.has('workspace.file.write')) add('effect:state.write');
+  if (
+    available.has('workspace.process.run')
+    && (codingTask && requestsMutation
+      || /\b(run|execute|test|typecheck|lint|compile|build|install)\w*\b/.test(text))
+  ) add('effect:process.execute');
+  if (
+    required.length === 0
+    && available.has('workspace.file.read')
+    && /\b(read|inspect|review|audit|analy[sz]e|file|folder|directory|workspace|repo(?:sitory)?|codebase)\b/.test(text)
+  ) add('capability:workspace.file.read');
+  if (required.length === 0 && available.has('system.clock.read')) add('capability:system.clock.read');
+  return required.length > 0 ? required : ['runtime_outcome_observed'];
 }
 
 async function parseBody(req: Request): Promise<RuntimeRunRequest> {
@@ -1520,6 +1695,50 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     maximumLoadPerCpu: config.localInferenceLimits?.maximumLoadPerCpu ?? 4,
     gpuMemoryBytes: config.localInferenceLimits?.gpuMemoryBytes,
   });
+  const discoveredModelProfiles = new Map<string, ModelRuntimeProfile>();
+  const rememberDiscoveredModels = (
+    providerId: string,
+    models: Awaited<ReturnType<typeof discoverProviderModels>>,
+  ) => {
+    for (const model of models) {
+      if (typeof model.context_window !== 'number' || model.context_window <= 0) continue;
+      const reasoningEfforts = model.reasoning_efforts.filter((value): value is ReasoningEffort =>
+        value === 'low' || value === 'medium' || value === 'high' || value === 'max');
+      discoveredModelProfiles.set(`${providerId}/${model.id}`, {
+        contextWindow: model.context_window,
+        maxOutputTokens: typeof model.max_output_tokens === 'number' && model.max_output_tokens > 0
+          ? model.max_output_tokens
+          : Math.min(8_192, Math.max(1_024, Math.floor(model.context_window / 16))),
+        reasoningEfforts,
+        defaultReasoningEffort: reasoningEfforts.includes('medium') ? 'medium' : reasoningEfforts[0],
+        tier: model.tier === 'small' || model.tier === 'strong' ? model.tier : undefined,
+      });
+    }
+  };
+  const routeCatalogCache = new Map<string, { checkedAt: number; modelIds: Set<string> }>();
+  const preflightFallbackRoute = async (route: ModelRouteSelection, index: number): Promise<void> => {
+    // The primary may intentionally use a newly released/custom model absent
+    // from a lagging catalog. Fallbacks must be known-good before consuming a
+    // workflow attempt.
+    if (index === 0 || config.modelDriverFactory) return;
+    const provider = providerConfigurations(config).find(item => item.id === route.provider);
+    if (!provider) throw new Error(`MODEL_ROUTE_PROVIDER_UNKNOWN:${route.provider}`);
+    const key = provider.id;
+    let cached = routeCatalogCache.get(key);
+    if (!cached || Date.now() - cached.checkedAt > 60_000) {
+      let models: Awaited<ReturnType<typeof discoverProviderModels>>;
+      try { models = await discoverProviderModels(config, provider); }
+      catch (error) {
+        throw new Error(`MODEL_ROUTE_PROVIDER_UNREACHABLE:${provider.id}:${error instanceof Error ? error.message : String(error)}`);
+      }
+      rememberDiscoveredModels(provider.id, models);
+      cached = { checkedAt: Date.now(), modelIds: new Set(models.map(model => model.id)) };
+      routeCatalogCache.set(key, cached);
+    }
+    if (!cached.modelIds.has(route.model)) {
+      throw new Error(`MODEL_ROUTE_NOT_DISCOVERED:${provider.id}/${route.model}`);
+    }
+  };
   const workspaceResolver = new WorkspaceTargetResolver(config.workspace);
   const embeddingProfileForSession = (sessionId: string): EmbeddingProfile | undefined => {
     const selected = operatorStore.session(sessionId)?.embeddingProfileId;
@@ -1653,9 +1872,12 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       if (!/^[0-9a-f-]{36}$/i.test(handle) || !config.voiceSessionBroker) {
         return json({ error: 'unknown or unavailable voice session' }, 404);
       }
-      const signedUrl = config.voiceSessionBroker.claim(handle);
-      if (!signedUrl) return json({ error: 'voice session is missing, expired, or already claimed' }, 410);
-      return new Response(JSON.stringify({ signed_url: signedUrl }), {
+      const claim = config.voiceSessionBroker.claimEnvelope(handle);
+      if (!claim) return json({ error: 'voice session is missing, expired, or already claimed' }, 410);
+      const payload = claim.provider === 'elevenlabs'
+        ? { provider: claim.provider, signed_url: claim.signedUrl, expires_at: claim.expiresAt }
+        : { provider: claim.provider, access_token: claim.accessToken, websocket_url: claim.websocketUrl, expires_at: claim.expiresAt };
+      return new Response(JSON.stringify(payload), {
         status: 200,
         headers: {
           'content-type': 'application/json',
@@ -1798,6 +2020,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
         };
         try {
           const models = await discoverProviderModels(config, item);
+          rememberDiscoveredModels(item.id, models);
           return {
             id: item.id,
             label: item.label,
@@ -1828,6 +2051,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       if (!provider) return json({ error: 'provider is not configured' }, 404);
       try {
         const models = await discoverProviderModels(config, provider);
+        rememberDiscoveredModels(provider.id, models);
         const resources = localAdmission.snapshot();
         const recommended = localProvider(provider)
           ? selectQuantizedModel(models.flatMap(model =>
@@ -1841,6 +2065,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
           : undefined;
         return json({
           provider: provider.id,
+          dialect: providerDialect(provider),
           connected: true,
           default_model: discoveredDefaultModel(provider, models),
           models,
@@ -2948,7 +3173,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     const savedAgent = operatorStore.session(sessionId)?.agent;
     const runMode: 'fast' | 'reasoned' | 'agent' = body.run_mode === 'fast' || body.run_mode === 'reasoned' || body.run_mode === 'agent'
       ? body.run_mode
-      : 'reasoned';
+      : inferRunMode(objective);
     const autoMode = body.auto_mode === undefined ? savedAgent?.autoMode ?? false : body.auto_mode === true;
     const autoMaxSteps = Math.min(
       config.autoRunLimits?.maxSteps ?? 24,
@@ -2957,7 +3182,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     let selectedProvider = typeof body.provider === 'string'
       ? body.provider
       : savedAgent?.provider ?? config.provider;
-    const selectedReasoningEffort = reasoningEffort(body.reasoning_effort)
+    let selectedReasoningEffort = reasoningEffort(body.reasoning_effort)
       ?? savedAgent?.reasoningEffort;
     if (!providerConfigurations(config).some(item => item.id === selectedProvider)) {
       return json({ error: `Unknown provider ${selectedProvider}.` }, 400);
@@ -2974,6 +3199,9 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       return json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
     let selectedModel = selection.model!;
+    if (!selectedReasoningEffort && selectedProvider === 'groq' && /(?:^|\/)gpt-oss-/i.test(selectedModel)) {
+      selectedReasoningEffort = runMode === 'fast' ? 'low' : runMode === 'agent' ? 'high' : 'medium';
+    }
     const selectedRoutingMode = modelRoutingMode(
       body.routing_mode,
       savedAgent?.routingMode ?? config.modelRoutingMode,
@@ -3040,9 +3268,11 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     }
     const runId = `run:${crypto.randomUUID()}`;
     const selectedProviderConfiguration = providerConfigurations(config).find(item => item.id === selectedProvider);
-    const selectedModelProfile = selectedProviderConfiguration
+    const staticallyConfiguredModelProfile = selectedProviderConfiguration
       ? configuredModelProfile(selectedProviderConfiguration, selectedModel)
       : undefined;
+    const selectedModelProfile = staticallyConfiguredModelProfile
+      ?? discoveredModelProfiles.get(`${selectedProvider}/${selectedModel}`);
     const contextTokenBudget = selectedModelProfile
       ? Math.max(512, Math.min(64_000,
           selectedModelProfile.contextWindow - selectedModelProfile.maxOutputTokens - 6_000))
@@ -3050,7 +3280,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     const runAbort = new AbortController();
     if (req.signal.aborted) runAbort.abort(req.signal.reason);
     else req.signal.addEventListener('abort', () => runAbort.abort(req.signal.reason), { once: true });
-    const requiredEvidence = strings(body.required_evidence, ['runtime_outcome_observed']);
+    const submittedRequiredEvidence = strings(body.required_evidence);
     const runRegistry = await registry();
     const profileCapabilities = [
       ...(selectedProfile === 'partner'
@@ -3065,6 +3295,24 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     const authorizedCapabilities = profileCapabilities.filter(id => runRegistry.get(id) !== undefined);
     const authorizedManifests = runRegistry.manifests()
       .filter(manifest => authorizedCapabilities.includes(manifest.id));
+    const matchedCapabilityIds = taskRelevantCapabilityIds(objective, authorizedManifests);
+    const proposalCapabilityIds = matchedCapabilityIds.length > 0
+      ? matchedCapabilityIds
+      : authorizedManifests.map(manifest => manifest.id);
+    const proposalManifests = authorizedManifests.filter(manifest => proposalCapabilityIds.includes(manifest.id));
+    const requiredEvidence = submittedRequiredEvidence.length > 0
+      ? submittedRequiredEvidence
+      : deriveOutcomeEvidence(objective, proposalManifests);
+    const directResponseLane = url.pathname === '/api/chat'
+      && runMode === 'fast'
+      && !autoMode
+      && !resumeSeed
+      && linkedFiles.length === 0
+      && matchedCapabilityIds.length === 0;
+    const completeAfterVerifiedAction = runMode === 'fast'
+      && proposalManifests.length === 1
+      && proposalManifests.every(manifest => !manifest.effects.some(effect =>
+        effect === 'state.write' || effect === 'state.delete' || effect === 'process.execute'));
     const prohibitedEffects = ALL_EFFECTS.filter(effect =>
       !authorizedManifests.some(manifest => manifest.effects.includes(effect)),
     );
@@ -3132,7 +3380,13 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
     };
     operatorStore.recordRun(runProjection);
     activeRuns.set(runId, { controller: runAbort, sessionId });
-    const historyCompaction = compactSessionMessages(
+    const historyCompaction = directResponseLane ? {
+      summary: '',
+      sourceMessageIds: [],
+      retained: operatorStore.recentMessages(sessionId, { excludeRunId: runId }),
+      digest: '',
+      omittedCount: 0,
+    } : compactSessionMessages(
       (operatorStore.messages(sessionId) ?? []).filter(message => message.runId !== runId),
     );
     const priorMessages = historyCompaction.retained;
@@ -3148,7 +3402,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       embeddingProfileId?: string;
       embeddingModel?: string;
       limitation?: string;
-    } = sessionFiles.length > 0
+    } = !directResponseLane && sessionFiles.length > 0
       ? await searchKnowledge({ sessionId, query: objective, maxResults: 8 })
       : { sessionId, query: objective, results: [], embeddingAvailable: false };
     const historySources: ContextSource[] = [
@@ -3183,7 +3437,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       rebuildable: true,
       }] : []),
     ];
-    const recalledMemory = operatorStore.recallMemory(sessionId, objective, 8);
+    const recalledMemory = directResponseLane ? [] : operatorStore.recallMemory(sessionId, objective, 8);
     const memorySources: ContextSource[] = recalledMemory
       .map(({ record: memory, score, reasons }, index) => ({
         id: `memory:${memory.id}`,
@@ -3200,7 +3454,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
         confidence: 1,
         rebuildable: true,
       }));
-    const retrievedSources: ContextSource[] = operatorStore.searchSession(sessionId, objective, 8)
+    const retrievedSources: ContextSource[] = (directResponseLane ? [] : operatorStore.searchSession(sessionId, objective, 8))
       .filter(result => result.kind === 'message' && result.documentId !== `message:${runId}:user`)
       .map((result, index) => ({
         id: `retrieval:${sessionId}:${result.documentId}`,
@@ -3232,7 +3486,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
       confidence: Math.max(0, Math.min(1, result.score)),
       rebuildable: true,
     }));
-    const knowledgeStatusSources: ContextSource[] = sessionFiles.length > 0 ? [{
+    const knowledgeStatusSources: ContextSource[] = !directResponseLane && sessionFiles.length > 0 ? [{
       id: `knowledge:${sessionId}:retrieval-status`,
       title: 'Session knowledge retrieval status',
       content: knowledgeRecall.embeddingAvailable
@@ -3401,12 +3655,10 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               failure => ledger.append(runId, 'model.route_failed', failure),
               attempt => ledger.append(runId, 'model.route_selected', attempt),
               health => ledger.append(runId, 'model.route_health_changed', health),
+              directResponseLane ? undefined : preflightFallbackRoute,
+              failure => ledger.append(runId, 'model.route_preflight_failed', failure),
+              route => discoveredModelProfiles.get(`${route.provider}/${route.model}`),
             );
-            const runner = new WorkflowRunner({
-              model: modelDriver,
-              capabilities: runRegistry,
-              ledger,
-            });
             ledger.append(runId, 'operator.run_started', {
               sessionId,
               objective,
@@ -3426,7 +3678,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                 contextWindow: selectedModelProfile.contextWindow,
                 maxOutputTokens: selectedModelProfile.maxOutputTokens,
                 contextTokenBudget,
-                source: 'configured',
+                source: staticallyConfiguredModelProfile ? 'configured' : 'live_discovery',
               } : {
                 contextTokenBudget,
                 source: 'fallback',
@@ -3439,6 +3691,16 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                 maxWallTimeMs: config.autoRunLimits?.maxWallTimeMs ?? 600_000,
               } : undefined,
               authorizedCapabilities,
+              modelVisibleCapabilities: directResponseLane ? [] : proposalCapabilityIds,
+              responseLane: directResponseLane ? 'conversation' : 'workflow',
+              preparation: directResponseLane ? {
+                history: 'bounded_recent_only',
+                knowledgeRetrieval: 'skipped',
+                memoryRetrieval: 'skipped',
+                contextCompilation: 'skipped',
+                fallbackCatalogPreflight: 'skipped_until_needed',
+              } : { history: 'compacted_and_retrieved', contextCompilation: 'phase_specific' },
+              deterministicCompletionFastPath: completeAfterVerifiedAction,
               resumedFromRunId: resumeSeed?.runId,
               labExperimentId: lab?.experimentId,
               labAgentId: lab?.agentId,
@@ -3453,9 +3715,80 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                 rebuildable: true,
               });
             }
+            if (directResponseLane && modelDriver.respond) {
+              let response;
+              try {
+                response = await modelDriver.respond({
+                  objective,
+                  operatorContext: transcript,
+                  sessionInstructions: sessionAgent.instructions,
+                  responseDepth: 'fast',
+                  signal: runAbort.signal,
+                });
+              } catch (error) {
+                if (!(error instanceof Error) || error.message !== 'No model route supports conversational responses.') throw error;
+                ledger.append(runId, 'response.direct_unavailable', {
+                  reason: error.message,
+                  fallback: 'workflow',
+                });
+              }
+              if (response) {
+              const endedAt = new Date().toISOString();
+              ledger.append(runId, 'response.synthesized', {
+                text: response.answer,
+                evidenceRefs: [],
+                claims: [],
+                caveats: [],
+                model: response.model,
+                usage: response.usage,
+                generated: true,
+                responseLane: 'conversation',
+                verificationClaimed: false,
+              });
+              operatorStore.appendMessage(sessionId, {
+                id: `message:${runId}:assistant`,
+                role: 'assistant',
+                content: response.answer,
+                at: endedAt,
+                runId,
+                evidenceRefs: [],
+                caveats: [],
+              });
+              ledger.append(runId, 'operator.run_finished', {
+                status: 'completed',
+                sessionId,
+                responseLane: 'conversation',
+                verificationClaimed: false,
+                modelAudit: {
+                  calls: 1,
+                  proposalCalls: 0,
+                  synthesisCalls: 0,
+                  responseCalls: 1,
+                  inputTokens: response.usage.inputTokens,
+                  outputTokens: response.usage.outputTokens,
+                  reasoningTokens: response.usage.reasoningTokens ?? 0,
+                  tokenAccounting: 'provider_reported_successful_responses',
+                },
+              });
+              operatorStore.recordRun({
+                ...runProjection,
+                status: 'completed',
+                endedAt,
+                evidenceRefs: [],
+              });
+              return;
+              }
+            }
+            const runner = new WorkflowRunner({
+              model: modelDriver,
+              capabilities: runRegistry,
+              ledger,
+            });
             const result = await runner.run({
               runId,
               intent,
+              proposalCapabilityIds,
+              completeAfterVerifiedAction,
               conditions: [{
                 id: 'condition:operator-request',
                 statement: 'The current operator submitted this bounded request.',
@@ -3530,6 +3863,23 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
             });
             const observations = groundedObservations(result);
             const endedAt = new Date().toISOString();
+            const modelAudit = (responseUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number }) => {
+              const routeCalls = ledger.all().filter(event => event.type === 'model.route_selected');
+              const proposalUsage = result.steps.reduce((total, step) => ({
+                inputTokens: total.inputTokens + (step.usage.inputTokens ?? 0),
+                outputTokens: total.outputTokens + (step.usage.outputTokens ?? 0),
+                reasoningTokens: total.reasoningTokens + (step.usage.reasoningTokens ?? 0),
+              }), { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
+              return {
+                calls: routeCalls.length,
+                proposalCalls: routeCalls.filter(event => event.payload.operation === 'propose').length,
+                synthesisCalls: routeCalls.filter(event => event.payload.operation === 'synthesize').length,
+                inputTokens: proposalUsage.inputTokens + (responseUsage?.inputTokens ?? 0),
+                outputTokens: proposalUsage.outputTokens + (responseUsage?.outputTokens ?? 0),
+                reasoningTokens: proposalUsage.reasoningTokens + (responseUsage?.reasoningTokens ?? 0),
+                tokenAccounting: 'provider_reported_successful_responses',
+              };
+            };
             for (const step of result.steps) {
               if (
                 step.proposal.kind !== 'action'
@@ -3575,6 +3925,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
                 sessionId,
                 reasonCodes: result.reasonCodes,
                 reconciledSteps: result.steps.length,
+                modelAudit: modelAudit(),
               });
               operatorStore.recordRun({
                 ...runProjection,
@@ -3681,6 +4032,7 @@ export function createRuntimeHttpHandler(config: RuntimeHttpConfig) {
               status: result.status,
               receiptHash: result.receiptHash,
               sessionId,
+              modelAudit: modelAudit(response.usage),
             });
             operatorStore.recordRun({
               ...runProjection,
@@ -3879,6 +4231,9 @@ function mediaConfigurations(
   const capabilities: CapabilityAdapter[] = [];
   const timeoutMs = Number(environment.HYPER_MEDIA_TIMEOUT_MS ?? 60_000);
   const deepgramKey = environment.DEEPGRAM_API_KEY;
+  let voiceSessionBroker: EphemeralVoiceSessionBroker | undefined = deepgramKey
+    ? new EphemeralVoiceSessionBroker()
+    : undefined;
   if (deepgramKey) {
     capabilities.push(
       new DeepgramTranscriptionCapability(workspace, {
@@ -3893,11 +4248,16 @@ function mediaConfigurations(
         model: environment.HYPER_DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
         timeoutMs,
       }),
+      new DeepgramVoiceAgentSessionCapability({
+        apiKey: deepgramKey,
+        broker: voiceSessionBroker!,
+        baseUrl: environment.HYPER_DEEPGRAM_BASE_URL,
+        timeoutMs,
+      }),
     );
   }
 
   const elevenLabsKey = environment.ELEVENLABS_API_KEY;
-  let voiceSessionBroker: EphemeralVoiceSessionBroker | undefined;
   if (elevenLabsKey) {
     capabilities.push(new ElevenLabsTranscriptionCapability(workspace, {
       apiKey: elevenLabsKey,
@@ -3918,7 +4278,7 @@ function mediaConfigurations(
     const agentIds = (environment.HYPER_ELEVENLABS_AGENT_IDS ?? environment.ELEVENLABS_AGENT_ID ?? '')
       .split(',').map(value => value.trim()).filter(value => /^agent_[A-Za-z0-9_-]+$/.test(value));
     if (agentIds.length) {
-      voiceSessionBroker = new EphemeralVoiceSessionBroker();
+      voiceSessionBroker ??= new EphemeralVoiceSessionBroker();
       capabilities.push(new ElevenLabsVoiceAgentSessionCapability({
         apiKey: elevenLabsKey,
         allowedAgentIds: agentIds,
@@ -4173,7 +4533,7 @@ export function runtimeHttpConfig(environment = process.env): RuntimeHttpConfig 
       apiKeyEnvironmentName: 'DEEPSEEK_API_KEY',
       defaultModel: environment.HYPER_DEEPSEEK_MODEL
         ?? (provider === 'deepseek' ? selectedModel : undefined)
-        ?? 'deepseek-chat',
+        ?? 'deepseek-v4-flash',
     }, {
       id: 'mistral',
       label: 'Mistral AI',

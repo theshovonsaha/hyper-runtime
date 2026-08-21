@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   DeepgramSpeechSynthesisCapability,
   DeepgramTranscriptionCapability,
+  DeepgramVoiceAgentSessionCapability,
   ElevenLabsSpeechSynthesisCapability,
   ElevenLabsTranscriptionCapability,
   ElevenLabsVoiceAgentSessionCapability,
@@ -12,6 +13,7 @@ import {
   OpenAiCompatibleVisionCapability,
   OpenAiImageGenerationCapability,
   type ImageGenerationArgs,
+  type DeepgramVoiceSessionArgs,
   type SpeechSynthesisArgs,
   type TranscriptionArgs,
   type VisionAnalysisArgs,
@@ -142,6 +144,38 @@ describe('bounded media capabilities', () => {
     const handle = (observation.value as { sessionHandle: string }).sessionHandle;
     expect(broker.claim(handle)).toContain('ephemeral-secret');
     expect(broker.claim(handle)).toBeUndefined();
+  });
+
+  test('exchanges the Deepgram project key for a bounded one-time browser token', async () => {
+    const broker = new EphemeralVoiceSessionBroker();
+    const capability = new DeepgramVoiceAgentSessionCapability({
+      apiKey: 'deepgram-project-secret',
+      broker,
+      fetchImpl: async (_input, init) => {
+        expect(new Headers(init?.headers).get('authorization')).toBe('Token deepgram-project-secret');
+        expect(JSON.parse(String(init?.body))).toEqual({ ttl_seconds: 30 });
+        return Response.json({ access_token: 'header.payload.signature-with-enough-length', expires_in: 30 });
+      },
+    });
+    const call = invocation<DeepgramVoiceSessionArgs>(
+      capability,
+      'proposal:deepgram-voice',
+      'voice://deepgram/agent',
+      ['network.request'],
+      { ttlSeconds: 30, region: 'eu' },
+    );
+    const execution = await capability.execute(call.proposal, call.grant);
+    const observation = await capability.observe(call.proposal);
+    expect(await capability.verify(call.proposal, execution, observation)).toMatchObject({ passed: true });
+    expect(JSON.stringify(observation)).not.toContain('signature-with-enough-length');
+    expect(JSON.stringify(observation)).not.toContain('deepgram-project-secret');
+    const handle = (observation.value as { sessionHandle: string }).sessionHandle;
+    expect(broker.claimEnvelope(handle)).toEqual(expect.objectContaining({
+      provider: 'deepgram',
+      accessToken: 'header.payload.signature-with-enough-length',
+      websocketUrl: 'wss://api.eu.deepgram.com/v1/agent/converse',
+    }));
+    expect(broker.claimEnvelope(handle)).toBeUndefined();
   });
 
   test('analyzes local images and writes inline generated images with digest observation', async () => {

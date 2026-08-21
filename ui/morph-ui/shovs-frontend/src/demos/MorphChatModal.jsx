@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Activity, ArrowLeft, Braces, Check, ChevronDown, ChevronRight, CircleStop, Clock3, Database,
+  ArrowLeft, Braces, Check, ChevronDown, ChevronRight, CircleStop, Clock3, Database,
   Eye, FileText, Folder, FolderOpen, History, Layers3, Link2, ListChecks, Loader2, MessageSquare, Paperclip, Pencil, Plus, RotateCw,
   Search, Send, Server, Settings2, Sparkles, TerminalSquare, Trash2, Wrench, X,
 } from "lucide-react";
@@ -84,7 +84,7 @@ function normalizeUiEvent(event={}) {
   };
 }
 const initialMessages = () => [
-  { id:id("msg"), role:"assistant", at:Date.now(), content:"Ask me to research something, inspect a file, or run a multi-step task. Every action will remain visible and navigable." },
+  { id:id("msg"), role:"assistant", at:Date.now(), content:"Tell me the outcome you need. I’ll choose the approach, use the right tools, and verify the work before calling it done." },
 ];
 const SESSION_KEY = "hyper_chat_sessions_v1";
 const API_BASE_KEY = "hyper_api_base";
@@ -108,7 +108,7 @@ function storedRoutes() {
   } catch { return []; }
 }
 
-function RoutingRouteField({index,route,providers,apiBase,onChange}) {
+function RoutingRouteField({index,route,providers,apiBase,onChange,onRemove}) {
   const [models,setModels]=useState([]),[state,setState]=useState("idle");
   useEffect(()=>{
     if(!route.provider)return;
@@ -120,7 +120,7 @@ function RoutingRouteField({index,route,providers,apiBase,onChange}) {
     return()=>{active=false;};
   },[route.provider]);
   const known=models.some(item=>item.id===route.model);
-  return <div className="mcm-route-pair"><b>{String.fromCharCode(65+index)}</b><select value={route.provider} onChange={event=>{const provider=providers.find(item=>item.id===event.target.value);onChange({provider:event.target.value,model:provider?.default_model||""});}}>{providers.filter(item=>item.configured).map(item=><option value={item.id} key={item.id}>{item.label||item.id}</option>)}</select><select value={known?route.model:"__custom__"} disabled={state==="loading"} onChange={event=>onChange({...route,model:event.target.value==="__custom__"?"":event.target.value})}><option value="__custom__">{state==="loading"?"Loading…":"Custom model…"}</option>{models.map(item=><option value={item.id} key={item.id}>{item.name||item.id}</option>)}</select>{!known&&<input value={route.model} onChange={event=>onChange({...route,model:event.target.value})} placeholder="Model ID"/>}</div>;
+  return <div className="mcm-route-pair"><b>{String.fromCharCode(65+index)}</b><select value={route.provider} onChange={event=>{const provider=providers.find(item=>item.id===event.target.value);onChange({provider:event.target.value,model:provider?.default_model||""});}}>{providers.filter(item=>item.configured).map(item=><option value={item.id} key={item.id}>{item.label||item.id}{item.connected===false?" · offline":""}</option>)}</select><select value={known?route.model:"__custom__"} disabled={state==="loading"} onChange={event=>onChange({...route,model:event.target.value==="__custom__"?"":event.target.value})}><option value="__custom__">{state==="loading"?"Loading…":"Custom model…"}</option>{models.map(item=><option value={item.id} key={item.id}>{item.name||item.id}</option>)}</select>{!known&&<input value={route.model} onChange={event=>onChange({...route,model:event.target.value})} placeholder="Model ID"/>}{onRemove&&<button type="button" onClick={onRemove} title="Remove fallback route" aria-label={`Remove route ${String.fromCharCode(65+index)}`}><X size={13}/></button>}</div>;
 }
 
 function freshSession() {
@@ -179,7 +179,7 @@ export function MorphChatModal() {
   const [pendingApproval, setPendingApproval] = useState(null);
   const [operatorPanel, setOperatorPanel] = useState(null);
   const [profile, setProfile] = useState(() => localStorage.getItem("hyper_profile") || "inspect");
-  const [runMode, setRunMode] = useState(() => localStorage.getItem(RUN_MODE_KEY) || "reasoned");
+  const [runMode, setRunMode] = useState(() => localStorage.getItem(RUN_MODE_KEY) || "auto");
   const [reasoningEffort, setReasoningEffort] = useState(() => localStorage.getItem(REASONING_KEY) || "auto");
   const [sessionId, setSessionId] = useState(initialSession.backendSessionId || null);
   const [attachments, setAttachments] = useState([]);
@@ -208,8 +208,11 @@ export function MorphChatModal() {
   const timelineRuns = [...pastRuns.filter(item => item.id !== run?.id), ...(run ? [run] : [])];
 
   const apiUrl = (path, base=apiBase) => `${base.replace(/\/$/, "")}${path}`;
+  const activeRouteCount = () => routingMode==="fallback"
+    ? Math.max(1,Math.min(4,routingRoutes.length||1))
+    : ROUTE_COUNTS[routingMode]||1;
   const activeRoutingRoutes = () => {
-    const count=ROUTE_COUNTS[routingMode]||1;
+    const count=activeRouteCount();
     return Array.from({length:count},(_,index)=>index===0
       ? {provider:selectedProvider,model:selectedModel}
       : routingRoutes[index]||{provider:"",model:""}).filter(route=>route.provider&&route.model);
@@ -291,9 +294,20 @@ export function MorphChatModal() {
         || discovered.find(item=>item.configured)?.id
         || config.provider;
       const provider=discovered.find(item=>item.id===chosen);
+      const primaryModel=chosen===preferred&&selectedModel ? selectedModel : provider?.default_model||config.model||"";
       setSelectedProvider(chosen);
       localStorage.setItem(PROVIDER_KEY,chosen);
-      setSelectedModel(current=>chosen===preferred&&current ? current : provider?.default_model || config.model || "");
+      setSelectedModel(primaryModel);
+      setRoutingRoutes(current=>{
+        if(current.length>1)return [{provider:chosen,model:primaryModel},...current.slice(1)].slice(0,4);
+        const chain=initialSession.agent?.fallbackProviders?.length
+          ? initialSession.agent.fallbackProviders
+          : config.model_routing?.fallback_chain||[];
+        const fallbacks=chain.filter(id=>id!==chosen).flatMap(id=>{const item=discovered.find(candidate=>candidate.id===id&&candidate.configured&&candidate.connected!==false);return item?.default_model?[{provider:id,model:item.default_model}]:[];});
+        const routes=[{provider:chosen,model:primaryModel},...fallbacks].slice(0,4);
+        localStorage.setItem(ROUTES_KEY,JSON.stringify(routes));
+        return routes;
+      });
       if (config.profiles?.length) setProfile(current => {
         const next = config.profiles.includes(current) ? current : config.profiles[0];
         localStorage.setItem("hyper_profile", next);
@@ -418,7 +432,13 @@ export function MorphChatModal() {
       if (next.agent.provider) { setSelectedProvider(next.agent.provider); localStorage.setItem(PROVIDER_KEY,next.agent.provider); }
       if (next.agent.model) { setSelectedModel(next.agent.model); localStorage.setItem(MODEL_KEY,next.agent.model); }
       if (next.agent.routingMode) { setRoutingMode(next.agent.routingMode); localStorage.setItem(ROUTING_KEY,next.agent.routingMode); }
-      if (next.agent.routingRoutes?.length) { setRoutingRoutes(next.agent.routingRoutes); localStorage.setItem(ROUTES_KEY,JSON.stringify(next.agent.routingRoutes)); }
+      if (next.agent.routingRoutes?.length || next.agent.fallbackProviders?.length) {
+        const primary={provider:next.agent.provider,model:next.agent.model};
+        const routes=next.agent.routingRoutes?.length>1 ? next.agent.routingRoutes : [primary,...(next.agent.fallbackProviders||[])
+          .filter(id=>id!==primary.provider)
+          .flatMap(id=>{const provider=providerCatalog.find(item=>item.id===id);return provider?.default_model?[{provider:id,model:provider.default_model}]:[];})].slice(0,4);
+        setRoutingRoutes(routes);localStorage.setItem(ROUTES_KEY,JSON.stringify(routes));
+      }
       setAgentAutonomous(Boolean(next.agent.autonomous));
       setAutoMode(Boolean(next.agent.autoMode));
       setAutoMaxSteps(next.agent.autoMaxSteps||backendInfo?.auto_run?.max_steps||24);
@@ -572,7 +592,7 @@ export function MorphChatModal() {
             provider:selectedProvider,
             model,
             routing_mode:routingMode,
-            fallback_providers:backendInfo?.model_routing?.fallback_chain || [],
+            fallback_providers:routes.slice(1).map(route=>route.provider),
             routing_routes:routes,
           }),
         });
@@ -602,10 +622,10 @@ export function MorphChatModal() {
     }
     if (event.type === "gate.open") setPendingApproval(normalized);
     if (event.type === "gate.resolved") setPendingApproval(null);
-    if (event.type === "run.end" || event.type === "run.error" || event.type === "run.pause") {
+    if (event.type === "run.end" || event.type === "run.error" || event.type === "run.pause" || event.type === "run.cancelled") {
       setRun(previous => previous ? {
         ...previous,
-        status:event.type === "run.error" ? "error" : event.type === "run.pause" ? "paused" : "complete",
+        status:event.type === "run.error" ? "error" : event.type === "run.pause" ? "paused" : event.type === "run.cancelled" ? "cancelled" : "complete",
         endedAt:Date.now(),
       } : previous);
     }
@@ -635,10 +655,10 @@ export function MorphChatModal() {
           provider:selectedProvider || backendInfo?.provider,
           model:selectedModel || backendInfo?.model,
           routing_mode:routingMode,
-          fallback_providers:backendInfo?.model_routing?.fallback_chain || [],
+          fallback_providers:activeRoutingRoutes().slice(1).map(route=>route.provider),
           routing_routes:activeRoutingRoutes(),
           auto_mode:autoMode,
-          run_mode:runMode,
+          ...(runMode!=="auto"?{run_mode:runMode}:{}),
           ...(reasoningEffort!=="auto"?{reasoning_effort:reasoningEffort}:{}),
           linked_files:linkedFiles.map(file=>file.scope==="workspace"||file.scope==="artifact"?{scope:"workspace",path:file.path}:{scope:"session",id:file.id}),
         }),
@@ -743,7 +763,7 @@ export function MorphChatModal() {
     demoToken.current += 1;
     const backendRunId=activeBackendRunIdRef.current||run?.backendId;
     setRun(previous => previous ? { ...previous, status:"cancelling" } : previous);
-    let durableCancellation=!backendRunId;
+    let durableCancellation=false;
     if(backendRunId&&backendState==="online"){
       try{
         const response=await fetch(apiUrl(`/api/runs/${encodeURIComponent(backendRunId)}/cancel`),{method:"POST"});
@@ -752,8 +772,10 @@ export function MorphChatModal() {
         durableCancellation=response.ok;
       } catch {/* The stream can still be stopped locally, but not called durably cancelled. */}
     }
-    abortRef.current?.abort();
-    setRun(previous => previous ? { ...previous, status:durableCancellation?"cancelled":"interrupted", endedAt:Date.now() } : previous);
+    if(!durableCancellation){
+      abortRef.current?.abort();
+      setRun(previous => previous ? { ...previous, status:"interrupted", endedAt:Date.now() } : previous);
+    }
   }
 
   useEffect(() => {
@@ -772,7 +794,7 @@ export function MorphChatModal() {
       <aside className="mcm-session-rail">
         <div className="mcm-session-head"><div><small>Workspace</small><strong>Chats</strong></div><button onClick={newChat} disabled={working} title="New chat"><Plus size={15}/></button></div>
         <button className="mcm-new-chat" onClick={newChat} disabled={working}><Plus size={14}/>New chat</button>
-        <nav className="mcm-library-nav" aria-label="Operator data views"><button onClick={()=>setOperatorPanel("files")}><FolderOpen size={12}/>Files</button><button onClick={()=>setOperatorPanel("runs")}><History size={12}/>Runs</button><button onClick={()=>setOperatorPanel("memory")}><Database size={12}/>Memory</button><button onClick={()=>setOperatorPanel("tools")}><Wrench size={12}/>Tools</button><button onClick={()=>setOperatorPanel("schedules")}><Clock3 size={12}/>Schedules</button><button onClick={()=>setOperatorPanel("signals")}><Activity size={12}/>Signals</button><button onClick={()=>setOperatorPanel("corrections")}><ListChecks size={12}/>Corrections</button><button onClick={()=>setOperatorPanel("scorecard")}><ListChecks size={12}/>Score</button></nav>
+        <nav className="mcm-library-nav" aria-label="Operator workspace"><button onClick={()=>setOperatorPanel("files")}><FolderOpen size={12}/>Files</button><button onClick={()=>setOperatorPanel("runs")}><Layers3 size={12}/>Library</button></nav>
         <div className="mcm-session-list">{[...sessions].sort((a,b)=>b.updatedAt-a.updatedAt).map(item=><div key={item.id} className={item.id===activeSessionId?"active":""}><button onClick={()=>openSession(item)}><MessageSquare size={13}/><span><strong>{item.title}</strong><small>{item.runs?.length || 0} runs</small></span></button><button className="delete" onClick={()=>void deleteChat(item)} title="Delete chat" aria-label={`Delete ${item.title}`}><Trash2 size={12}/></button></div>)}</div>
         <div className={`mcm-connection-card ${backendState}`}><span className={`mcm-backend-dot ${backendState}`}/><div><strong>{backendState === "online" ? "Backend connected" : backendState === "checking" ? "Connecting…" : "Backend offline"}</strong><small>{backendState === "online" ? `${selectedProvider || backendInfo?.provider} · ${selectedModel || backendInfo?.model}` : backendError || "Start with bun run dev"}</small></div><button onClick={()=>void connectBackend()} title="Reconnect"><RotateCw size={13}/></button></div>
       </aside>
@@ -785,12 +807,15 @@ export function MorphChatModal() {
           <label>Route A provider<select value={selectedProvider} onChange={event=>void chooseProvider(event.target.value)}>{providerCatalog.map(item=><option key={item.id} value={item.id} disabled={!item.configured}>{item.label||item.id} · {!item.configured?"not configured":item.connected===false?"offline":"ready"}</option>)}</select><small>Credentials stay in the backend.</small></label>
           <label>Route A model<select value={modelOptions.some(item=>item.id===selectedModel)?selectedModel:"__custom__"} onChange={event=>setSelectedModel(event.target.value==="__custom__"?"":event.target.value)} disabled={modelsState==="loading"}><option value="__custom__">{modelsState==="loading"?"Discovering models…":"Custom model ID…"}</option>{modelOptions.map(item=><option value={item.id} key={item.id}>{item.name||item.id}{item.context_window?` · ${Math.round(item.context_window/1024)}k ctx`:" · context unknown"}{item.quantization?` · ${item.quantization}`:""}</option>)}</select>{!modelOptions.some(item=>item.id===selectedModel)&&<input value={selectedModel} onChange={event=>setSelectedModel(event.target.value)} placeholder="Model ID"/>}<small className={modelsState==="error"?"error":""}>{modelsError||`${modelOptions.length} live models discovered`}</small></label>
           <label>Pass routing<select value={routingMode} onChange={event=>chooseRoutingMode(event.target.value)}>{(backendInfo?.model_routing?.modes||["fallback"]).map(value=><option value={value} key={value}>{ROUTING_LABEL[value]||value}</option>)}</select><small>Each scheduled route automatically falls through the remaining routes on failure.</small></label>
-          {(ROUTE_COUNTS[routingMode]||1)>1&&<section className="mcm-route-editor"><small>Provider / model pairs</small>{routingRoutes.slice(1,ROUTE_COUNTS[routingMode]).map((route,index)=><RoutingRouteField key={index+1} index={index+1} route={route} providers={providerCatalog} apiBase={apiBase} onChange={next=>setRoutingRoutes(current=>current.map((item,itemIndex)=>itemIndex===index+1?next:item))}/>)}</section>}
+          {activeRouteCount()>1&&<section className="mcm-route-editor"><small>Provider / model pairs</small>{routingRoutes.slice(1,activeRouteCount()).map((route,index)=><RoutingRouteField key={index+1} index={index+1} route={route} providers={providerCatalog} apiBase={apiBase} onChange={next=>setRoutingRoutes(current=>current.map((item,itemIndex)=>itemIndex===index+1?next:item))} onRemove={routingMode==="fallback"?()=>setRoutingRoutes(current=>current.filter((_,itemIndex)=>itemIndex!==index+1)):undefined}/>)}</section>}
+          {routingMode==="fallback"&&routingRoutes.length<4&&<button type="button" onClick={()=>setRoutingRoutes(current=>{const used=new Set([selectedProvider,...current.map(route=>route.provider)]);const provider=providerCatalog.find(item=>item.configured&&item.connected!==false&&!used.has(item.id));return provider?[{provider:selectedProvider,model:selectedModel},...current.slice(1),{provider:provider.id,model:provider.default_model||""}]:current;})}>Add fallback route</button>}
           <label>Capability scope<select value={profile} onChange={event=>{const next=event.target.value;setProfile(next);if(next==="partner")setAgentAutonomous(true);localStorage.setItem("hyper_profile",next);}}>{(backendInfo?.profiles||["inspect"]).map(value=><option value={value} key={value}>{backendInfo?.profile_details?.[value]?.label||value}</option>)}</select><small>{profile==="partner"?"Uses all configured tools, session memory, strict approvals, and verified completion.":"Only tools in this scope can be proposed."}</small></label>
+          <label>Task depth<select value={runMode} onChange={event=>{setRunMode(event.target.value);localStorage.setItem(RUN_MODE_KEY,event.target.value);}}><option value="auto">Automatic · infer from intent</option><option value="fast">Fast</option><option value="reasoned">Reasoned</option><option value="agent">Agent</option></select><small>Automatic chooses the smallest sufficient execution loop from the requested outcome.</small></label>
+          <label>Reasoning effort<select value={reasoningEffort} onChange={event=>{setReasoningEffort(event.target.value);localStorage.setItem(REASONING_KEY,event.target.value);}}><option value="auto">Automatic · model profile</option><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select><small>Only supported values are sent to the selected provider.</small></label>
           <label>Session embedding profile<select value={embeddingState.profile_id||"lexical"} disabled={Boolean(embeddingState.locked_at)} onChange={event=>setEmbeddingState(current=>({...current,profile_id:event.target.value}))}>{(embeddingState.profiles?.length?embeddingState.profiles:backendInfo?.memory?.embedding_profiles||[]).map(item=><option key={item.id} value={item.id} disabled={!item.available}>{item.label} · {item.available?"ready":"unavailable"}</option>)}</select><small>{embeddingState.locked_at?`Locked after ingestion · ${embeddingState.model||embeddingState.profile_id}. New session or reindex required to change vector space.`:"Choose once before the first upload. Retrieval queries and documents use the same pinned vector space."}</small></label>
           <details className="mcm-agent-settings"><summary>Session agent</summary><label><span><input type="checkbox" checked={agentAutonomous} onChange={event=>setAgentAutonomous(event.target.checked)}/> Keep as a reusable agent</span><small>This chat retains its route schedule, scope, history, and verified memory.</small></label><label><span><input type="checkbox" checked={autoMode} onChange={event=>setAutoMode(event.target.checked)}/> Bounded auto mode</span><small>Resolves reversible preferences and continues until verified, blocked, or budget-limited. It never expands authority.</small></label>{autoMode&&<label>Maximum autonomous steps<input type="number" min="1" max={backendInfo?.auto_run?.max_steps||24} value={autoMaxSteps} onChange={event=>setAutoMaxSteps(Math.max(1,Number(event.target.value)||1))}/><small>Server ceiling {backendInfo?.auto_run?.max_steps||24} steps · {Math.round((backendInfo?.auto_run?.max_wall_time_ms||600000)/60000)} minute wall-time limit.</small></label>}<label>Standing instructions<textarea rows={3} value={agentInstructions} onChange={event=>setAgentInstructions(event.target.value)} placeholder="Optional constraints for this session agent"/></label></details>
           {backendInfo&&<div className="mcm-runtime-contract"><small>Connected runtime contract</small><div>{(backendInfo.capabilities||[]).map(item=><span key={item.id}>{item.id}</span>)}</div><p>Approval at risk {backendInfo.approval_thresholds?.[profile]??"—"} · observed-state verification · route changes never change authority</p></div>}
-          <footer><button type="button" onClick={()=>void connectBackend()}><RotateCw size={13}/>Probe connections</button><button className="primary" type="submit" disabled={!selectedProvider||!selectedModel||activeRoutingRoutes().length!==(ROUTE_COUNTS[routingMode]||1)}>Save settings</button></footer>
+          <footer><button type="button" onClick={()=>void connectBackend()}><RotateCw size={13}/>Probe connections</button><button className="primary" type="submit" disabled={!selectedProvider||!selectedModel||activeRoutingRoutes().length!==activeRouteCount()}>Save settings</button></footer>
         </form></div>}
         {operatorPanel==="files"?<FileExplorer apiBase={apiBase} sessionId={sessionId} linkedFiles={linkedFiles} onLink={file=>setLinkedFiles(current=>current.some(item=>(item.id||item.path)===(file.id||file.path))?current:[...current,file])} onClose={()=>setOperatorPanel(null)}/>:operatorPanel&&<OperatorPanel panel={operatorPanel} onPanelChange={setOperatorPanel} apiBase={apiBase} sessionId={sessionId} sessionAgentEnabled={agentAutonomous} profiles={backendInfo?.profiles||["inspect"]} providers={providerCatalog} selectedProvider={selectedProvider} selectedModel={selectedModel} modelOptions={modelOptions} allowedHosts={backendInfo?.capabilities?.find(item=>item.id==="network.http.get")?.targetPatterns||[]} onResume={resumeRun} onClose={()=>setOperatorPanel(null)}/>}
 
@@ -804,7 +829,7 @@ export function MorphChatModal() {
           <>
             <header className="mcm-header">
               <div className="mcm-avatar-wrap"><BlobAvatar state={working ? "running":"idle"} size={38}/></div>
-              <div className="mcm-title"><h2>Hyper operator</h2><p><span className={`mcm-backend-dot ${backendState}`}/>{backendState === "online" ? `${backendInfo?.runtime || "runtime"} · ${selectedProvider || backendInfo?.provider || "provider"} · ${selectedModel || backendInfo?.model || "default"}` : backendState === "checking" ? "checking runtime" : "backend offline"}</p></div>
+              <div className="mcm-title"><h2>Private operator</h2><p><span className={`mcm-backend-dot ${backendState}`}/>{backendState === "online" ? "Ready · work is verified before completion" : backendState === "checking" ? "Preparing your runtime" : "Runtime unavailable · reconnect to continue"}</p></div>
               <button className="mcm-icon-btn" onClick={newChat} title="New chat"><Plus size={15}/></button>
               <button className="mcm-icon-btn" onClick={()=>setOperatorPanel("files")} title="Browse and link files"><FolderOpen size={15}/></button>
               <button className="mcm-icon-btn" onClick={()=>setOperatorPanel("runs")} title="Operator library"><Layers3 size={15}/></button>
@@ -812,7 +837,7 @@ export function MorphChatModal() {
               <button className="mcm-icon-btn" onClick={()=>{setTab("history");setShape("inspect");}} title="Open turn history"><History size={15}/></button>
             </header>
 
-            <ChatTimeline messages={messages} runs={timelineRuns} working={working} onInspect={inspectEvent} onEdit={message=>{setEditingMessage(message);setInput(message.content);}} onRegenerate={message=>void sendMessage({editMessage:message,textOverride:message.content})} timelineRef={timelineRef} onTimelineScroll={event=>{
+            <ChatTimeline messages={messages} runs={timelineRuns} working={working} onStart={setInput} onInspect={inspectEvent} onEdit={message=>{setEditingMessage(message);setInput(message.content);}} onRegenerate={message=>void sendMessage({editMessage:message,textOverride:message.content})} timelineRef={timelineRef} onTimelineScroll={event=>{
               const node=event.currentTarget;
               followTimelineRef.current=node.scrollHeight-node.scrollTop-node.clientHeight<72;
             }}/>
@@ -828,10 +853,7 @@ export function MorphChatModal() {
                     <button className="mcm-attach" onClick={()=>fileInputRef.current?.click()} disabled={uploading||backendState!=="online"} title={backendInfo?.features?.embeddings?`Upload session files · hybrid retrieval with ${backendInfo?.memory?.embedding_model}`:"Upload session files · lexical, temporal, and relationship retrieval"}>{uploading?<Loader2 size={15}/>:<Paperclip size={15}/>}</button>
                     <button className="mcm-attach" onClick={()=>setOperatorPanel("files")} disabled={backendState!=="online"} title="Browse workspace and session files"><Folder size={15}/></button>
                     <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key === "Escape"&&editingMessage){setEditingMessage(null);setInput("");}if(e.key === "Enter" && !e.shiftKey){e.preventDefault();sendMessage();}}} placeholder={editingMessage?"Edit prompt in a new branch…":"Ask for a multi-step task…"} rows={1}/>
-                    <label className="mcm-profile-select" title="Capability authority for this run"><span>scope</span><select value={profile} onChange={event=>{setProfile(event.target.value);localStorage.setItem("hyper_profile",event.target.value);}}>{(backendInfo?.profiles || ["inspect","workspace"]).map(value=><option value={value} key={value}>{backendInfo?.profile_details?.[value]?.label || value}</option>)}</select></label>
-                    <label className="mcm-profile-select" title="Depth and step budget for this run"><span>mode</span><select value={runMode} onChange={event=>{setRunMode(event.target.value);localStorage.setItem(RUN_MODE_KEY,event.target.value);}}><option value="fast">Fast</option><option value="reasoned">Reasoned</option><option value="agent">Agent</option></select></label>
-                    <label className="mcm-profile-select" title="Provider-specific reasoning effort; Auto uses the model profile default"><span>think</span><select value={reasoningEffort} onChange={event=>{setReasoningEffort(event.target.value);localStorage.setItem(REASONING_KEY,event.target.value);}}><option value="auto">Auto</option><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>
-                    <button className="mcm-demo-button" onClick={()=>sendMessage({forceDemo:true})} title="Run paced workflow demo"><Sparkles size={13}/> Demo</button>
+                    <button className="mcm-auto-badge" onClick={()=>setSettingsOpen(true)} title="Automatic task depth, provider reasoning, and bounded authority"><Sparkles size={13}/> Auto</button>
                     <button className="mcm-send" onClick={()=>sendMessage()} disabled={!input.trim()} aria-label="Send"><Send size={16}/></button>
                   </div>
                 )}
@@ -903,10 +925,17 @@ function AgentCapsule({ view, elapsed, phaseIndex, events, tools, onOpen, onStop
   </div>;
 }
 
-function ChatTimeline({ messages, runs, working, onInspect, onEdit, onRegenerate, timelineRef, onTimelineScroll }) {
+const OPERATOR_STARTERS = [
+  ['Decide with evidence', 'Research this decision, compare the strongest options, and recommend one with evidence and risks.'],
+  ['Build or fix', 'Inspect the project, identify the highest-impact gap, implement the fix, and verify it.'],
+  ['Create a deliverable', 'Turn my goal and attached context into a polished, usable deliverable.'],
+];
+
+function ChatTimeline({ messages, runs, working, onStart, onInspect, onEdit, onRegenerate, timelineRef, onTimelineScroll }) {
   const ungrouped=messages.filter(message=>!message.runId);
   return <div className="mcm-chat-timeline" ref={timelineRef} onScroll={onTimelineScroll}>
     {ungrouped.map(message=><div key={message.id} className={`mcm-bubble ${message.role}`}>{message.content}</div>)}
+    {!working&&runs.length===0&&<section className="mcm-starting-points"><small>Start with an outcome</small><div>{OPERATOR_STARTERS.map(([label,prompt])=><button key={label} onClick={()=>onStart(prompt)}><span>{label}</span><ChevronRight size={14}/></button>)}</div><p>Hyper selects task depth and tools automatically. Files, evidence, and the full runtime trail stay inspectable.</p></section>}
     {runs.map((item,index)=>{
       const runMessages=messages.filter(message=>message.runId===item.id), visibleEvents=item.events.filter(event=>!["model.delta","respond.final"].includes(event.type)).map(normalizeUiEvent);
       const active=working&&index===runs.length-1;
@@ -916,21 +945,21 @@ function ChatTimeline({ messages, runs, working, onInspect, onEdit, onRegenerate
 }
 
 function RunWorkflowCard({run,events,active,onInspect}) {
-  const [expanded,setExpanded]=useState(active);
-  useEffect(()=>{if(active)setExpanded(true);},[active]);
+  const [expanded,setExpanded]=useState(false);
   const failures=events.filter(event=>["error","blocked"].includes(event.state)).length;
   const verified=events.filter(event=>(event.lens==="verification"||event.type==="verify.verdict")&&event.state==="success").length;
   const evidence=new Set(events.flatMap(event=>event.correlation?.evidence_refs||[])).size;
   const canonical=events.some(event=>event.canonical_event_id);
+  const conversational=events.some(event=>event.payload?.responseLane==="conversation");
   const highlighted=events.filter(event=>["error","blocked"].includes(event.state));
   const compact=[events[0],...highlighted.slice(-1),...events.slice(-3)].filter(Boolean);
   const visible=expanded?events:[...new Map(compact.map(event=>[event.uiId,event])).values()];
   const completed=run.status==="complete"||run.status==="completed";
-  const status=active?"running":completed?"verified":failures?"attention":run.status||"finished";
+  const status=active?"running":failures?"attention":completed?(conversational?"answered":verified||evidence?"verified":"completed"):run.status||"finished";
   return <section className={`mcm-workflow-stack ${active?"active":""}`}>
     <button className="mcm-workflow-summary" onClick={()=>setExpanded(value=>!value)} aria-expanded={expanded}>
       <span className={`mcm-run-signal ${status}`}><i/>{status}</span>
-      <span className="mcm-workflow-heading"><strong>{active?"Agent is working":"Agent workflow"}</strong><small>{run.source||"runtime"} · {events.length} {canonical?"canonical projections":"runtime events"}</small></span>
+      <span className="mcm-workflow-heading"><strong>{active?"Agent is working":conversational?"Direct response":"Agent workflow"}</strong><small>{conversational?"one model response · no tools":`${run.source||"runtime"} · ${events.length} ${canonical?"canonical projections":"runtime events"}`}</small></span>
       <span className="mcm-workflow-proof"><b>{verified}</b><small>verified</small></span>
       <span className="mcm-workflow-proof"><b>{evidence}</b><small>evidence</small></span>
       {expanded?<ChevronDown size={15}/>:<ChevronRight size={15}/>}</button>

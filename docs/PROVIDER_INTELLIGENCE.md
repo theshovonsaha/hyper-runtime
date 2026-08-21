@@ -1,5 +1,8 @@
 # Provider intelligence, budgets, and live inference evidence
 
+See the [provider-by-provider compatibility audit](PROVIDER_COMPATIBILITY_AUDIT.md)
+for native request fields, official sources, and remaining live-evidence limits.
+
 Hyper-Runtime treats model metadata and model output as inputs to the runtime,
 never as authority. Provider profiles can be attached to each configured model:
 
@@ -34,6 +37,14 @@ output, cached-input, cache-write, reasoning, and total tokens when the provider
 exposes them. Cost is computed only when explicit per-million-token rates exist.
 Before a request, token counts remain estimates unless the selected profile has
 a tokenizer-specific counter; an estimate is never presented as provider usage.
+
+Provider HTTP `408`, `429`, `500`, `502`, `503`, and `504` responses receive up
+to three bounded, abort-aware attempts. Permanent client errors are not retried,
+and a sanitized provider error message is retained with the status. Secondary
+fallback routes must pass a cached model-catalog and connectivity preflight;
+unknown models and unreachable local engines are recorded and removed before
+they consume workflow proposal attempts. Explicit custom primary models remain
+allowed because provider catalogs can lag new releases.
 
 The proposal prompt has a stable system prefix containing runtime rules and
 capability schemas. Per-pass scope and context live in the dynamic user message.
