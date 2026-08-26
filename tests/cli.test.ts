@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   assessOperatorClarification,
+  classifyModelRouteFailure,
   adaptLedgerEvent,
   createRuntimeHttpHandler,
   JsonOperatorStore,
@@ -15,7 +16,10 @@ import {
   runTask,
   finalText,
   deriveOutcomeEvidence,
+  extractExplicitMemoryStatement,
   inferRunMode,
+  planTaskConnections,
+  projectSessionContinuity,
   synthesisDecision,
   selectProposalCapabilityIds,
   type HyperTaskFile,
@@ -49,6 +53,17 @@ afterEach(() => {
 });
 
 describe('practical CLI workflow', () => {
+  test('classifies provider failures for durable route cooldowns', () => {
+    expect(classifyModelRouteFailure('HTTP 403 forbidden')).toMatchObject({
+      failureClass: 'authentication_or_access', retryable: false,
+    });
+    expect(classifyModelRouteFailure('HTTP 413 TPM limit 8000 requested 10361')).toMatchObject({
+      failureClass: 'request_budget', retryable: false,
+    });
+    expect(classifyModelRouteFailure('Unable to connect to Ollama')).toMatchObject({
+      failureClass: 'provider_unreachable', retryable: true,
+    });
+  });
   test('infers task depth when the client leaves execution strategy automatic', () => {
     expect(inferRunMode('What time is it in Toronto?')).toBe('fast');
     expect(inferRunMode('Research and compare current context engineering approaches with sources.')).toBe('reasoned');
@@ -80,7 +95,90 @@ describe('practical CLI workflow', () => {
     expect(selectProposalCapabilityIds(
       'Search the web for recent Canadian budgeting pain points and do not write files.', manifests,
     )).toEqual(['network.web.search']);
-    expect(selectProposalCapabilityIds('Hello, can you explain what you can help with?', manifests)).toEqual(manifests.map(item => item.id));
+    expect(selectProposalCapabilityIds('Hello, can you explain what you can help with?', manifests)).toEqual([]);
+    expect(selectProposalCapabilityIds('Write Python code snippets with comments.', manifests)).toEqual([]);
+    expect(selectProposalCapabilityIds('Run a multi-step reasoning task.', manifests)).toEqual([]);
+    expect(selectProposalCapabilityIds('Write the implementation to a project file.', manifests))
+      .toContain('workspace.file.write');
+    expect(planTaskConnections('Continue that explanation with more detail.', manifests)).toMatchObject({
+      capabilityIds: [],
+      needsRecentHistory: true,
+      needsSessionSearch: false,
+      needsVerifiedMemory: false,
+      needsUploadedFiles: false,
+    });
+    expect(planTaskConnections('Recall what we decided earlier in this chat.', manifests)).toMatchObject({
+      needsRecentHistory: true,
+      needsSessionSearch: true,
+      needsVerifiedMemory: true,
+    });
+    expect(planTaskConnections('Summarize the uploaded document.', manifests, { hasLinkedSessionFile: true }))
+      .toMatchObject({ needsUploadedFiles: true });
+    expect(planTaskConnections('Fix it and run the tests.', manifests, {
+      recentConversation: 'The repository file contains a broken implementation.',
+    })).toMatchObject({
+      capabilityIds: expect.arrayContaining(['workspace.file.write']),
+      needsRecentHistory: true,
+      reasons: expect.arrayContaining(['continued-task-connections']),
+    });
+    const codingManifests = [
+      { id: 'workspace.file.read' }, { id: 'workspace.repository.search' },
+      { id: 'workspace.file.patch' }, { id: 'workspace.file.write' }, { id: 'workspace.process.run' },
+    ] as unknown as Parameters<typeof planTaskConnections>[1];
+    expect(planTaskConnections('Fix the bug in this repository and run the focused tests.', codingManifests))
+      .toMatchObject({
+        lane: 'coding',
+        capabilityIds: expect.arrayContaining([
+          'workspace.file.read', 'workspace.repository.search', 'workspace.file.patch', 'workspace.process.run',
+        ]),
+      });
+    expect(planTaskConnections('Read workspace/input.txt and verify it.', codingManifests))
+      .toMatchObject({ lane: 'workspace', capabilityIds: ['workspace.file.read'] });
+    expect(planTaskConnections('Write a commented Python snippet in chat.', codingManifests))
+      .toMatchObject({ lane: 'conversation', capabilityIds: [] });
+    expect(planTaskConnections(
+      'Create a routine maker and tracker and code it in one HTML with all functionality.', codingManifests,
+    )).toMatchObject({
+      lane: 'coding',
+      capabilityIds: expect.arrayContaining([
+        'workspace.repository.search', 'workspace.file.write', 'workspace.file.patch', 'workspace.process.run',
+      ]),
+    });
+  });
+
+  test('separates operator memory from uploaded-file knowledge retrieval', () => {
+    const manifests = [
+      { id: 'session.knowledge.search', description: 'Search uploaded session files.', effects: ['state.read'], requiredEffects: ['state.read'] },
+    ] as unknown as Parameters<typeof selectProposalCapabilityIds>[1];
+    expect(selectProposalCapabilityIds('Remember that my favorite color is blue.', manifests)).toEqual([]);
+    expect(selectProposalCapabilityIds('Search the uploaded document for my favorite color.', manifests))
+      .toEqual(['session.knowledge.search']);
+    expect(planTaskConnections("What's my name?", manifests)).toMatchObject({
+      capabilityIds: [], needsRecentHistory: true, needsVerifiedMemory: true,
+    });
+    expect(planTaskConnections('List every prompt I said so far in this chat exactly.', manifests))
+      .toMatchObject({ needsRecentHistory: true });
+    expect(extractExplicitMemoryStatement('use memory tool to store my name')).toBeUndefined();
+    expect(extractExplicitMemoryStatement('Remember that my favorite color is blue.'))
+      .toBe('Remember that my favorite color is blue.');
+    expect(extractExplicitMemoryStatement('its von from now on, remember and store it'))
+      .toBe('its von from now on, remember and store it');
+  });
+
+  test('projects one bounded continuity contract with active direction and correction precedence', () => {
+    const messages = [
+      { id: 'u1', role: 'user' as const, content: 'Evaluate generic chat agents.', at: now },
+      { id: 'a1', role: 'assistant' as const, content: 'Here are generic benchmarks.', at: now },
+      { id: 'u2', role: 'user' as const, content: 'No, focus on our Hyper runtime rather than generic agents.', at: now },
+      { id: 'a2', role: 'assistant' as const, content: 'I will focus on Hyper.', at: now },
+      { id: 'u3', role: 'user' as const, content: 'Show how its verified execution differs.', at: now },
+    ];
+    const projection = projectSessionContinuity(messages, 'standard');
+    expect(projection.context).toContain('Active operator direction');
+    expect(projection.context).toContain('focus on our Hyper runtime');
+    expect(projection.context).toContain('Operator corrections and boundaries');
+    expect(projection.context).toContain('Recent exchange (chronological)');
+    expect(projection.retained.map(message => message.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3']);
   });
 
   test('synthesizes verified web research even in fast mode and keeps a readable evidence fallback', () => {
@@ -682,7 +780,7 @@ describe('practical CLI workflow', () => {
       .map(line => JSON.parse(line.slice(6)) as Record<string, any>);
     const compiled = frames.find(frame => frame.event?.type === 'context.packet');
     expect(compiled?.event.payload.includedSourceIds)
-      .toContain('history:session:b:recent-transcript');
+      .toContain('history:session:b:continuity');
     expect(compiled?.event.payload.includedSourceIds)
       .not.toContain('memory:verified:a');
     expect(frames.at(-1)?.event.type).toBe('run.pause');
@@ -714,6 +812,8 @@ describe('practical CLI workflow', () => {
         async respond(request) {
           responseCalls += 1;
           expect(request.objective).toBe('Hi, what can you help me with?');
+          expect(request.responseDepth).toBe('reasoned');
+          expect(request.maxOutputTokens).toBe(2_048);
           return {
             answer: 'I can help you research, build, explain, and create polished deliverables.',
             model: 'test:conversation',
@@ -724,7 +824,7 @@ describe('practical CLI workflow', () => {
     });
     const response = await handler(new Request('http://runtime.local/api/chat', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'Hi, what can you help me with?' }),
+      body: JSON.stringify({ message: 'Hi, what can you help me with?', run_mode: 'reasoned' }),
     }));
     const frames = (await response.text()).split('\n')
       .filter(line => line.startsWith('data: '))
@@ -743,6 +843,143 @@ describe('practical CLI workflow', () => {
       contextCompilation: 'skipped',
     });
     expect(ledger.find(event => event.type === 'operator.run_finished')?.payload.responseLane).toBe('conversation');
+    expect(ledger.find(event => event.type === 'operator.run_finished')?.payload.outcomeKind).toBe('answered');
+  });
+
+  test('routes a requested single-file app into coding tools instead of conversational HTML output', async () => {
+    const root = temporaryRoot();
+    let visibleCapabilities: string[] = [];
+    let responseCalls = 0;
+    const handler = createRuntimeHttpHandler({
+      port: 0, workspace: root, ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'), provider: 'ollama', model: 'test-model',
+      allowedExecutables: ['bun'], allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose(_packet, capabilities) {
+          visibleCapabilities = capabilities.map(capability => capability.id);
+          throw new Error('fixture stops after connection selection');
+        },
+        async respond() {
+          responseCalls += 1;
+          return { answer: 'incorrect direct response', model: 'fixture', usage: { inputTokens: 1, outputTokens: 1, latencyMs: 1 } };
+        },
+      }),
+    });
+    const response = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Create a routine maker and tracker and code it in one HTML with all functionality.',
+        profile: 'coder', run_mode: 'agent',
+      }),
+    }));
+    const frames = (await response.text()).split('\n').filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6)) as Record<string, any>);
+    expect(responseCalls).toBe(0);
+    expect(visibleCapabilities).toEqual(expect.arrayContaining([
+      'workspace.repository.search', 'workspace.file.write', 'workspace.file.patch', 'workspace.process.run',
+    ]));
+    const runId = String(frames.find(frame => frame.kind === 'meta')?.run_id);
+    const ledger = readFileSync(join(root, 'ledgers', `${runId}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(ledger.find(event => event.type === 'operator.run_started')?.payload).toMatchObject({
+      responseLane: 'workflow',
+      connectionPlan: { lane: 'coding' },
+    });
+  });
+
+  test('commits explicit operator memory and supplies it to a later direct response', async () => {
+    const root = temporaryRoot();
+    const operatorPath = join(root, 'operator.json');
+    const contexts: string[] = [];
+    const handler = createRuntimeHttpHandler({
+      port: 0, workspace: root, ledgerDirectory: join(root, 'ledgers'), operatorDataPath: operatorPath,
+      provider: 'ollama', model: 'test-model', allowedExecutables: [], allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose() { throw new Error('operator memory must not be routed to uploaded-file search'); },
+        async respond(request) {
+          contexts.push(request.operatorContext ?? '');
+          return {
+            answer: request.objective.includes('Remember') ? 'I will remember that.' : 'Your favorite color is blue.',
+            model: 'test:memory-conversation', usage: { inputTokens: 10, outputTokens: 5, latencyMs: 1 },
+          };
+        },
+      }),
+    });
+    const vague = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'use memory tool to store my name', session_id: 'session:memory' }),
+    }));
+    expect(await vague.text()).toContain('What exact value should I remember?');
+    const emptyMemory = await handler(new Request('http://runtime.local/api/memory?session_id=session%3Amemory'));
+    expect(await emptyMemory.json()).toMatchObject({ memory: [] });
+
+    const first = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Remember that my favorite color is blue.', session_id: 'session:memory' }),
+    }));
+    const firstFrames = (await first.text()).split('\n').filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6)) as Record<string, any>);
+    expect(firstFrames.some(frame => frame.event?.type === 'memory.commit')).toBeTrue();
+    const memoryResponse = await handler(new Request('http://runtime.local/api/memory?session_id=session%3Amemory'));
+    expect(await memoryResponse.json()).toMatchObject({
+      memory: [{ content: 'Remember that my favorite color is blue.', kind: 'fact', evidenceRefs: [expect.stringContaining('request:run:')] }],
+    });
+
+    const second = await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: "What's my favorite color?", session_id: 'session:memory' }),
+    }));
+    const secondText = await second.text();
+    expect(secondText).toContain('Your favorite color is blue.');
+    expect(contexts.at(-1)).toContain('Verified session memory (runtime-supplied');
+    expect(contexts.at(-1)).toContain('favorite color is blue');
+
+    const stored = await handler(new Request('http://runtime.local/api/memory?session_id=session%3Amemory'));
+    const storedBody = await stored.json() as { memory: Array<{ id: string }> };
+    const memoryId = storedBody.memory[0]!.id;
+    const deleted = await handler(new Request(
+      `http://runtime.local/api/memory/${encodeURIComponent(memoryId)}`,
+      { method: 'DELETE' },
+    ));
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toMatchObject({ ok: true, status: 'deleted', already_deleted: false });
+    const retriedDelete = await handler(new Request(
+      `http://runtime.local/api/memory/${encodeURIComponent(memoryId)}`,
+      { method: 'DELETE' },
+    ));
+    expect(retriedDelete.status).toBe(200);
+    expect(await retriedDelete.json()).toMatchObject({ ok: true, status: 'deleted', already_deleted: true });
+    const afterDelete = await handler(new Request('http://runtime.local/api/memory?session_id=session%3Amemory'));
+    expect(await afterDelete.json()).toEqual({ memory: [] });
+  });
+
+  test('supplies a wider operator-only transcript for exact prompt-history requests', async () => {
+    const root = temporaryRoot();
+    const operatorPath = join(root, 'operator.json');
+    const store = new JsonOperatorStore(operatorPath);
+    store.ensureSession('session:transcript', now, 'Transcript');
+    for (let index = 0; index < 12; index += 1) {
+      store.appendMessage('session:transcript', { id: `message:${index}:user`, role: 'user', content: `exact prompt ${index}`, at: now, runId: `run:${index}` });
+      store.appendMessage('session:transcript', { id: `message:${index}:assistant`, role: 'assistant', content: `generic answer ${index}`, at: now, runId: `run:${index}` });
+    }
+    let suppliedContext = '';
+    const handler = createRuntimeHttpHandler({
+      port: 0, workspace: root, ledgerDirectory: join(root, 'ledgers'), operatorDataPath: operatorPath,
+      provider: 'ollama', model: 'test-model', allowedExecutables: [], allowedHosts: [],
+      modelDriverFactory: () => ({
+        async propose() { throw new Error('exact transcript chat must remain on the direct lane'); },
+        async respond(request) {
+          suppliedContext = request.operatorContext ?? '';
+          return { answer: 'Listed.', model: 'test:transcript', usage: { inputTokens: 10, outputTokens: 2, latencyMs: 1 } };
+        },
+      }),
+    });
+    await (await handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'List every prompt I said so far in this chat exactly.', session_id: 'session:transcript' }),
+    }))).text();
+    expect(suppliedContext).toContain('Operator: exact prompt 0');
+    expect(suppliedContext).toContain('Operator: exact prompt 11');
+    expect(suppliedContext).not.toContain('generic answer');
   });
 
   test('runs a versioned task file, writes a real file, and persists replay', async () => {
@@ -1025,7 +1262,7 @@ describe('practical CLI workflow', () => {
       profile_details: {
         partner: {
           label: 'Partner · all configured tools',
-          capabilities: ['workspace.file.read', 'workspace.directory.list', 'system.clock.read', 'workspace.file.write', 'session.knowledge.search'],
+          capabilities: ['workspace.file.read', 'workspace.directory.list', 'workspace.repository.search', 'system.clock.read', 'workspace.file.write', 'workspace.file.patch', 'session.knowledge.search'],
         },
       },
       model_routing: {
@@ -1076,9 +1313,9 @@ describe('practical CLI workflow', () => {
       event: {
         payload: {
           objective: 'Read workspace/input.txt and verify it.',
-        legalCapabilityIds: ['workspace.file.read', 'workspace.directory.list'],
+        legalCapabilityIds: ['workspace.file.read'],
           outputContract: ['action', 'pivot', 'ask', 'complete'],
-          audit: { sourcesConsidered: 1 },
+          audit: { sourcesConsidered: 0 },
         },
       },
     });
@@ -1105,15 +1342,23 @@ describe('practical CLI workflow', () => {
       `http://runtime.local/api/runs/${encodeURIComponent(meta?.run_id)}/context`,
     ));
     const contextBody = await contextView.json() as { packets: Array<{ items: unknown[]; tool_call?: unknown }> };
-    expect(contextBody.packets.length).toBe(2);
-    expect(contextBody.packets[0]?.items.length).toBeGreaterThan(0);
+    expect(contextBody.packets.length).toBe(1);
+    expect(contextBody.packets[0]?.items).toHaveLength(0);
     expect(contextBody.packets.some(packet => !!packet.tool_call)).toBeTrue();
+    const inferenceView = await handler(new Request(
+      `http://runtime.local/api/runs/${encodeURIComponent(meta?.run_id)}/inference`,
+    ));
+    expect(await inferenceView.json()).toMatchObject({
+      run_id: meta?.run_id,
+      evidence_class: 'canonical_inference_projection',
+      passes: [{ model: 'test:http-driver', prompt: { system_content: 'excluded_by_default' } }],
+    });
     const memoryGraph = await handler(new Request(
       `http://runtime.local/api/memory/graph?session_id=${encodeURIComponent(meta?.session_id)}`,
     ));
     expect(await memoryGraph.clone().json()).toMatchObject({
       evidence_class: 'canonical_run_projection',
-      counts: { memories: 1, active_memories: 1, runs: 1, contexts: 2 },
+      counts: { memories: 1, active_memories: 1, runs: 1, contexts: 1 },
       integrity: { canonical_runs: 1, orphan_edges: 0, truncated: false },
     });
     const edited = await handler(new Request(
@@ -1126,7 +1371,7 @@ describe('practical CLI workflow', () => {
     ));
     expect(await passMetrics.json()).toMatchObject({
       run_id: meta?.run_id,
-      metrics: { passes_audited: 2 },
+      metrics: { passes_audited: 1 },
     });
     const trail = await handler(new Request(
       `http://runtime.local/api/runs/${encodeURIComponent(meta?.run_id)}/trail`,
@@ -1148,7 +1393,7 @@ describe('practical CLI workflow', () => {
     expect(new Set(trailBody.events.map((event: Record<string, unknown>) => event.id)).size).toBe(trailBody.events.length);
     const signals = await handler(new Request('http://runtime.local/api/signals'));
     expect(await signals.json()).toMatchObject({
-      aggregate: { passes_audited: 2 },
+      aggregate: { passes_audited: 1 },
       runs: [{ id: meta?.run_id }],
     });
     const labCatalog = await handler(new Request('http://runtime.local/api/lab/catalog'));
@@ -1266,6 +1511,9 @@ describe('practical CLI workflow', () => {
     expect(meta).toBeDefined();
     const sessionId = String(meta!.session_id);
     expect(frames.some(frame => frame.event?.type === 'artifact.ready')).toBeTrue();
+    expect(frames.find(frame => frame.event?.type === 'run.end')?.event).toMatchObject({
+      title: 'Artifact created', payload: { outcomeKind: 'artifact_created', artifactCount: 1 },
+    });
 
     const files = await handler(new Request(`http://runtime.local/api/sessions/${encodeURIComponent(sessionId)}/files`));
     const body = await files.json() as { artifacts: Array<{ id: string; target: string; verified: boolean }> };
@@ -1340,7 +1588,7 @@ describe('practical CLI workflow', () => {
     expect(await invalidRing.json()).toMatchObject({ error: 'ring routing requires exactly 3 provider/model routes.' });
     const response = await handler(new Request('http://runtime.local/api/chat', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-        message: 'Read workspace/input.txt and verify it.', session_id: sessionId,
+        message: 'Inspect the workspace directory and read workspace/input.txt.', session_id: sessionId,
       }),
     }));
     const frames = (await response.text()).split('\n').filter(line => line.startsWith('data: '))
@@ -1356,6 +1604,41 @@ describe('practical CLI workflow', () => {
     ]);
     expect(frames.some(frame => frame.event?.type === 'model.response' && frame.event?.payload?.routeId === '2:lmstudio/model-b')).toBeTrue();
     expect(frames.some(frame => frame.event?.type === 'run.end')).toBeTrue();
+  });
+
+  test('cools an authentication-failed route across runs and uses the healthy fallback', async () => {
+    const root = temporaryRoot();
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    const handler = createRuntimeHttpHandler({
+      port: 0, workspace: root, ledgerDirectory: join(root, 'ledgers'),
+      operatorDataPath: join(root, 'operator.json'), provider: 'ollama', model: 'model-a',
+      providers: [{ id: 'lmstudio', baseUrl: 'http://127.0.0.1:1234/v1', defaultModel: 'model-b' }],
+      modelRouteSchedule: [
+        { provider: 'ollama', model: 'model-a' },
+        { provider: 'lmstudio', model: 'model-b' },
+      ],
+      allowedExecutables: [], allowedHosts: [],
+      modelDriverFactory: selection => ({
+        async propose() { throw new Error('proposal path is not expected'); },
+        async respond() {
+          if (selection?.model === 'model-a') {
+            primaryCalls += 1;
+            throw new Error('HTTP 403 forbidden');
+          }
+          fallbackCalls += 1;
+          return { answer: 'Fallback answer.', model: 'fixture:fallback', usage: { inputTokens: 4, outputTokens: 2, latencyMs: 1 } };
+        },
+      }),
+    });
+    const run = async () => handler(new Request('http://runtime.local/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Hello there.', routing_mode: 'fallback' }),
+    })).then(response => response.text());
+    expect(await run()).toContain('Fallback answer.');
+    expect(await run()).toContain('Fallback answer.');
+    expect(primaryCalls).toBe(1);
+    expect(fallbackCalls).toBe(2);
   });
 
   test('persists bounded custom tools and schedules without expanding host authority', async () => {
@@ -1565,8 +1848,10 @@ describe('practical CLI workflow', () => {
       capabilities: [
         { id: 'workspace.file.read' },
         { id: 'workspace.directory.list' },
+        { id: 'workspace.repository.search' },
         { id: 'system.clock.read' },
         { id: 'workspace.file.write' },
+        { id: 'workspace.file.patch' },
         { id: 'session.knowledge.search' },
         { id: 'network.web.search' },
         { id: 'media.image.analyze' },
@@ -1580,9 +1865,9 @@ describe('practical CLI workflow', () => {
         { id: 'groq', configured: true },
         { id: 'openrouter', configured: true },
         { id: 'nvidia', configured: true },
-        { id: 'deepseek', configured: true, default_model: 'deepseek-v4-flash' },
+        { id: 'deepseek', configured: true, default_model: 'deepseek-chat' },
         { id: 'mistral', configured: true, default_model: 'mistral-small-latest' },
-        { id: 'opencode', configured: true, default_model: 'deepseek-v4-flash-free' },
+        { id: 'opencode', configured: true },
         { id: 'lmstudio', configured: true },
         { id: 'llamacpp', configured: true },
       ],

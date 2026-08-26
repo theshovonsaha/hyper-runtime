@@ -5,7 +5,9 @@ import {
   AllowlistedEnvironmentCredentialProvider,
   AllowlistedHttpCapability,
   BoundedProcessCapability,
+  PatchFileCapability,
   ReadFileCapability,
+  RepositorySearchCapability,
   WriteFileCapability,
 } from '@hyper/capabilities';
 import type {
@@ -142,6 +144,7 @@ export async function createModelDriver(options: ModelSelectionOptions): Promise
       options.baseUrl,
       fetch,
       options.modelTimeoutMs,
+      { nativeTools: options.modelProfile?.nativeTools },
     ), { profile: options.modelProfile, reasoningEffort: options.reasoningEffort });
   }
   const baseUrl = options.provider === 'ollama'
@@ -155,6 +158,7 @@ export async function createModelDriver(options: ModelSelectionOptions): Promise
     fetch,
     options.modelTimeoutMs,
     inferredDialect(options),
+    { nativeTools: options.modelProfile?.nativeTools },
   ), { profile: options.modelProfile, reasoningEffort: options.reasoningEffort });
 }
 
@@ -165,7 +169,9 @@ export async function runTask(options: RunCommandOptions): Promise<WorkflowRunRe
   const workspace = resolve(options.workspace);
   const capabilities = new CapabilityRegistry()
     .register(new ReadFileCapability(workspace))
-    .register(new WriteFileCapability(workspace));
+    .register(new RepositorySearchCapability(workspace))
+    .register(new WriteFileCapability(workspace))
+    .register(new PatchFileCapability(workspace));
   if (task.allowedExecutables?.length) {
     capabilities.register(new BoundedProcessCapability(workspace, {
       allowedExecutables: task.allowedExecutables,

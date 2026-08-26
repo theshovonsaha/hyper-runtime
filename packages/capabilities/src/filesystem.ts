@@ -7,6 +7,7 @@ import type {
   CapabilityGrant,
   CapabilityManifest,
   EffectReconciliation,
+  FileSliceObservation,
   InterruptedEffect,
   Observation,
   VerificationResult,
@@ -16,6 +17,8 @@ import { digest, validateGrant, WorkspaceTargetResolver } from './shared';
 export interface FileReadArgs extends Record<string, unknown> {
   expectedSha256?: string;
   maxBytes?: number;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface FileWriteArgs extends Record<string, unknown> {
@@ -27,6 +30,38 @@ async function readUtf8(path: string, maxBytes = 1_000_000): Promise<string> {
   const info = await stat(path);
   if (info.size > maxBytes) throw new Error(`File exceeds ${maxBytes} byte limit.`);
   return readFile(path, 'utf8');
+}
+
+async function readUtf8Slice(path: string, args: FileReadArgs, displayPath: string): Promise<FileSliceObservation> {
+  const content = await readUtf8(path, args.maxBytes ?? 1_000_000);
+  const starts = [0];
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === '\n') starts.push(index + 1);
+  }
+  const totalLines = Math.max(1, starts.length);
+  const startLine = args.startLine ?? 1;
+  const endLine = args.endLine ?? totalLines;
+  if (!Number.isInteger(startLine) || !Number.isInteger(endLine)
+    || startLine < 1 || endLine < startLine || endLine > totalLines) {
+    throw new Error(`Invalid line range ${startLine}-${endLine}; file has ${totalLines} lines.`);
+  }
+  if (endLine - startLine + 1 > 2_000) throw new Error('A file read is limited to 2,000 lines.');
+  const startCharacter = starts[startLine - 1]!;
+  const endCharacter = endLine < totalLines ? starts[endLine]! : content.length;
+  const text = content.slice(startCharacter, endCharacter);
+  const startByte = Buffer.byteLength(content.slice(0, startCharacter));
+  return {
+    path: displayPath,
+    snapshotSha256: digest(content),
+    sliceSha256: digest(text),
+    startLine,
+    endLine,
+    totalLines,
+    startByte,
+    endByte: startByte + Buffer.byteLength(text),
+    text,
+    truncated: startLine > 1 || endLine < totalLines,
+  };
 }
 
 export class ReadFileCapability implements CapabilityAdapter<FileReadArgs> {
@@ -45,6 +80,8 @@ export class ReadFileCapability implements CapabilityAdapter<FileReadArgs> {
       properties: {
         expectedSha256: { type: 'string' },
         maxBytes: { type: 'integer' },
+        startLine: { type: 'integer' },
+        endLine: { type: 'integer' },
       },
       additionalProperties: false,
     },
@@ -63,18 +100,15 @@ export class ReadFileCapability implements CapabilityAdapter<FileReadArgs> {
     const invalid = validateGrant(proposal, grant, this.manifest, 'state.read');
     if (invalid) return invalid;
     try {
-      const content = await readUtf8(
-        this.resolver.resolve(proposal.target),
-        proposal.args.maxBytes ?? 1_000_000,
-      );
+      const slice = await readUtf8Slice(this.resolver.resolve(proposal.target), proposal.args, proposal.target);
       return {
         success: true,
-        summary: `Read ${Buffer.byteLength(content)} bytes from ${proposal.target}.`,
+        summary: `Read ${slice.path} lines ${slice.startLine}-${slice.endLine} (${slice.endByte - slice.startByte} bytes).`,
         evidence: [{
           id: `tool:${proposal.id}`,
           kind: 'tool_result',
           source: this.manifest.id,
-          digest: digest(content),
+          digest: slice.sliceSha256,
         }],
       };
     } catch (error) {
@@ -89,19 +123,16 @@ export class ReadFileCapability implements CapabilityAdapter<FileReadArgs> {
 
   async observe(proposal: ActionProposal<FileReadArgs>): Promise<Observation> {
     try {
-      const content = await readUtf8(
-        this.resolver.resolve(proposal.target),
-        proposal.args.maxBytes ?? 1_000_000,
-      );
+      const slice = await readUtf8Slice(this.resolver.resolve(proposal.target), proposal.args, proposal.target);
       return {
         target: proposal.target,
         exists: true,
-        value: content,
+        value: slice,
         evidence: [{
           id: `observation:${proposal.id}`,
           kind: 'observation',
           source: this.manifest.id,
-          digest: digest(content),
+          digest: slice.sliceSha256,
         }],
       };
     } catch {
@@ -123,9 +154,12 @@ export class ReadFileCapability implements CapabilityAdapter<FileReadArgs> {
     execution: CapabilityExecution,
     observation: Observation,
   ): Promise<VerificationResult> {
-    const observedDigest = observation.exists ? digest(observation.value) : undefined;
+    const value = observation.value as FileSliceObservation | undefined;
+    const observedDigest = value?.snapshotSha256;
+    const executionDigest = execution.evidence.find(item => item.kind === 'tool_result')?.digest;
     const passed = execution.success
       && observation.exists
+      && executionDigest === value?.sliceSha256
       && (!proposal.args.expectedSha256 || proposal.args.expectedSha256 === observedDigest);
     return {
       passed,

@@ -147,6 +147,11 @@ credentials. `GET /api/models/:provider` discovers the live model inventory
 - `GET /api/runs/:runId/context` returns the exact canonical context items,
   exclusions, audits, linked tool proposal, and detected drift/bias signals for
   the Context Inspector.
+- `GET /api/runs/:runId/inference` projects each model pass as bounded
+  provider-neutral messages, preserved tool-call/result pairs, exact file-slice
+  references, omissions, inference purpose, reasoning effort, token estimates,
+  provider usage, and cache-prefix hashes. Hidden provider reasoning and the
+  literal system prompt are excluded from this default inspection response.
 - `GET /api/memory?session_id=:id` and `DELETE /api/memory/:id` manage
   session-isolated verified-outcome memory. `PATCH /api/memory/:id` appends a
   canonical supersession rather than mutating history, and
@@ -209,19 +214,31 @@ credential environment-variable names are server-owned configuration and
 cannot be supplied by a chat request. Profiles are explicit operator authority
 selections:
 
-- `inspect`: workspace reads;
-- `workspace`: workspace reads and writes;
+- `inspect`: exact workspace reads, bounded directory listing, and repository
+  text search;
+- `workspace`: workspace inspection, complete writes, and stale-safe exact
+  patches;
 - `web`: bounded normalized public-web search only;
 - `research`: public-web search plus workspace reads and writes;
-- `process`: workspace reads/writes plus configured executables;
-- `coder`: repository-scale reads/writes, configured executables, session
-  knowledge search, stronger coherence constraints, and a longer verified run;
+- `process`: workspace reads/writes plus configured executables; the exact
+  server allowlist is emitted in the process tool schema so models do not have
+  to guess executable names;
+- `coder`: bounded repository search, exact file slices, SHA-256-preconditioned
+  patches, complete writes for new files, configured executables, session
+  knowledge search, bounded stdout/stderr repair context after observed command
+  failures, stronger
+  coherence constraints, and a longer verified run;
 - `network`: workspace reads plus configured HTTP hosts;
 - `media`: workspace inspection plus only the configured speech, voice-agent,
   vision, and image-generation capabilities; and
 - `partner`: every capability currently registered by the server. This is an
   operator-selected authority ceiling, not a wildcard: manifest targets,
   conditions, risk policy, approval, observation, and verification still apply.
+
+Within the selected authority profile, `TaskConnectionPlan.lane`
+deterministically chooses conversation, workspace, coding, research, or media
+and exposes only task-relevant schemas. Lane selection cannot upgrade the
+operator-selected profile or add authority.
 
 `session.knowledge.search` is a low-risk read tool, but each run authorizes only
 the current session target. The model may refine a query iteratively; the

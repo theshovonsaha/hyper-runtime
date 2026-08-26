@@ -5,6 +5,7 @@ import { runCorrectionGrammarExperiment, writeCorrectionGrammarReport } from './
 import { runAdversarialExperiment, writeAdversarialReport } from './adversarial-experiment';
 import { runRuntimeLab, writeRuntimeLabReport } from './runtime-lab';
 import { runSpecializedAgentBenchmark, writeSpecializedAgentReport } from './specialized-agent-benchmark';
+import { runAgentSimulationBenchmark, writeAgentSimulationReport } from './agent-simulation';
 
 const report = await runExperiment();
 const adaptiveReport = await runAdaptiveWorkflowExperiment();
@@ -12,6 +13,7 @@ const correctionReport = await runCorrectionGrammarExperiment();
 const adversarialReport = await runAdversarialExperiment();
 const runtimeLabReport = await runRuntimeLab();
 const specializedReport = await runSpecializedAgentBenchmark();
+const agentSimulationReport = await runAgentSimulationBenchmark();
 const outputDir = resolve(process.cwd(), 'evals/results');
 writeReport(report, outputDir);
 writeAdaptiveReport(adaptiveReport, outputDir);
@@ -19,6 +21,7 @@ writeCorrectionGrammarReport(correctionReport, outputDir);
 writeAdversarialReport(adversarialReport, outputDir);
 writeRuntimeLabReport(runtimeLabReport, outputDir);
 writeSpecializedAgentReport(specializedReport, outputDir);
+writeAgentSimulationReport(agentSimulationReport, outputDir);
 
 console.log(`Authorized-Condition Evals: ${report.acceptance.passed ? 'PASS' : 'FAIL'}`);
 for (const [condition, metrics] of Object.entries(report.metrics)) {
@@ -38,6 +41,7 @@ console.log(
 console.log(`Adversarial Runtime Evals: ${adversarialReport.acceptance.passed ? 'PASS' : 'FAIL'} pass_rate=${adversarialReport.passRate.toFixed(3)} model_calls=0`);
 console.log(`Runtime Scenario Lab: ${runtimeLabReport.acceptance.passed ? 'PASS' : 'FAIL'} scenarios=${runtimeLabReport.trials.length} pass_rate=${runtimeLabReport.metrics.scenarioPassRate.toFixed(3)} evidence=deterministic_fixture`);
 console.log(`Specialized Agent Benchmark: ${specializedReport.acceptance.passed ? 'PASS' : 'FAIL'} trials=${specializedReport.trialCount} completion=${specializedReport.treatment.completionAccuracy.toFixed(3)} false_success=${specializedReport.treatment.falseSuccessRate.toFixed(3)} evidence=deterministic_fixture`);
+console.log(`Stateful Agent Simulation: ${agentSimulationReport.acceptance.passed ? 'PASS' : 'FAIL'} stories=${agentSimulationReport.storyCount} archetypes=${agentSimulationReport.metrics.archetypeCoverage.toFixed(3)} continuity=${agentSimulationReport.metrics.toolContinuityRate.toFixed(3)} recovery=${agentSimulationReport.metrics.recoveryRate.toFixed(3)} model_calls=${agentSimulationReport.metrics.totalModelCalls} evidence=simulated_inference`);
 console.log(
   `Correction Grammar Ablation: ${correctionReport.acceptance.passed ? 'PASS' : 'FAIL'} `
   + `baseline=${correctionReport.baselineStatus} `
@@ -53,4 +57,5 @@ if (
   || !adversarialReport.acceptance.passed
   || !runtimeLabReport.acceptance.passed
   || !specializedReport.acceptance.passed
+  || !agentSimulationReport.acceptance.passed
 ) process.exitCode = 1;

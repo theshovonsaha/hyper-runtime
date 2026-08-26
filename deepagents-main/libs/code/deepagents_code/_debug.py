@@ -1,0 +1,371 @@
+"""Shared debug-logging configuration for runtime and file-based tracing.
+
+When the `DEEPAGENTS_CODE_DEBUG` environment variable is set, modules that handle
+streaming or remote communication can enable detailed file-based logging. This
+helper centralizes the setup so the env-var names, file path, log level, and
+format are defined in one place.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from pathlib import Path
+
+# Windows-only ACL plumbing; see `_apply_windows_owner_only_dacl`. Imported
+# under the guard because `_debug` is on the startup path for every command and
+# `ctypes` costs a few milliseconds it can never repay on POSIX.
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+from deepagents_code._env_vars import (
+    DEBUG,
+    DEBUG_FILE,
+    DEFAULT_DEBUG_FILE,
+    LOG_LEVEL,
+    is_env_truthy,
+)
+
+logger = logging.getLogger(__name__)
+
+_DEBUG_HANDLER_ATTR = "_deepagents_code_debug_handler"
+LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+"""Canonical level-name to `logging` level mapping.
+
+The single source of truth for level names and their numeric values, shared with
+the Debug Console's level filter so severity ordering is never re-derived from
+hardcoded integers.
+"""
+
+
+def _prepare_debug_file(path: Path) -> None:
+    """Create or tighten a debug file before attaching the logging handler.
+
+    On POSIX the file is created or tightened to mode `0o600`. On Windows,
+    where `os.open` mode bits and `chmod` do not tighten the DACL, the DACL is
+    replaced with one granting read and write access to the current user only.
+
+    `O_NOFOLLOW` refuses a symlink at `path`. The default location is a
+    world-writable temp directory, so without it a planted symlink could
+    redirect captured MCP server stderr into a file of the attacker's choosing.
+
+    Raises:
+        OSError: If the file cannot be created, opened, or tightened. The
+            caller must treat this as fatal to file logging.
+    """  # noqa: DOC502 - raised by os.open/fchmod, not by an explicit raise
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        if os.name == "nt":
+            _set_windows_owner_only_dacl(path)
+            return
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is None:
+            path.chmod(0o600)
+        else:
+            fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+
+
+def _set_windows_owner_only_dacl(path: Path) -> None:
+    """Restrict `path` to the current user on Windows.
+
+    This is a no-op on POSIX, where `_prepare_debug_file` uses mode `0o600`
+    instead. The Windows implementation (defined only when `os.name == "nt"`)
+    replaces the file's DACL with one granting read and write access to the
+    current user and no one else.
+
+    Args:
+        path: Debug log file to lock down.
+
+    Raises:
+        OSError: If the DACL cannot be built or applied. `_prepare_debug_file`
+            propagates it; `configure_debug_logging` catches it and disables
+            file logging.
+    """  # noqa: DOC502 - raised by the callee, not by an explicit raise
+    if os.name != "nt":
+        return
+    _apply_windows_owner_only_dacl(path)
+
+
+if os.name == "nt":
+    # --- Windows user-only DACL ---------------------------------------------
+    # Structures and helpers mirroring the advapi32 API used to build and apply
+    # a DACL granting the current user read and write access, and no one else
+    # any access. `DELETE` and `WRITE_DAC` are deliberately not granted; the
+    # file owner retains them implicitly.
+
+    _SE_FILE_OBJECT = 1
+    _DACL_SECURITY_INFORMATION = 0x00000004
+    _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+    _TOKEN_QUERY = 0x0008
+    _TOKEN_USER_INFORMATION_CLASS = 1
+    _FILE_GENERIC_READ = 0x120089
+    _FILE_GENERIC_WRITE = 0x120116
+    # `TRUSTEE_FORM` / `TRUSTEE_TYPE` / `ACCESS_MODE` from `accctrl.h`. Named
+    # rather than inlined because all three enums start at 0 with unrelated
+    # meanings, so a transposed literal still compiles and is rejected only at
+    # runtime by `SetEntriesInAclW`.
+    _NO_MULTIPLE_TRUSTEE = 0
+    _TRUSTEE_IS_SID = 0
+    _TRUSTEE_IS_USER = 1
+    _SET_ACCESS = 2
+    _NO_INHERITANCE = 0
+
+    class _TRUSTEE_W(ctypes.Structure):  # noqa: N801  # mirrors Win32 TRUSTEE_W
+        """`TRUSTEE_W` identifying the current-user SID to `SetEntriesInAclW`."""
+
+        _fields_ = [
+            ("pMultipleTrustee", ctypes.c_void_p),
+            ("MultipleTrusteeOperation", ctypes.c_int),
+            ("TrusteeForm", ctypes.c_int),
+            ("TrusteeType", ctypes.c_int),
+            ("ptstrName", ctypes.c_void_p),
+        ]
+
+    class _EXPLICIT_ACCESS_W(ctypes.Structure):  # noqa: N801  # mirrors Win32 type
+        """`EXPLICIT_ACCESS_W` describing one access-control entry."""
+
+        _fields_ = [
+            ("grfAccessPermissions", wintypes.DWORD),
+            ("grfAccessMode", ctypes.c_int),
+            ("grfInheritance", wintypes.DWORD),
+            ("Trustee", _TRUSTEE_W),
+        ]
+
+    def _get_current_user_sid() -> ctypes.c_void_p:
+        """Return a pointer to the current user's SID.
+
+        The `TOKEN_USER` buffer the SID points into is attached to the returned
+        pointer as `_buffer`, so it stays alive for the DACL construction.
+        `ctypes` already retains it through `.contents`; the attribute makes
+        that guarantee explicit rather than incidental.
+
+        Returns:
+            A pointer to the current user's SID.
+
+        Raises:
+            OSError: If the process token or user SID cannot be read. Raised
+                via `ctypes.WinError`, which is a factory returning `OSError`.
+        """  # noqa: DOC501, DOC502 - `ctypes.WinError` returns an `OSError`
+        advapi32 = ctypes.windll.advapi32
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(
+            ctypes.windll.kernel32.GetCurrentProcess(),
+            _TOKEN_QUERY,
+            ctypes.byref(token),
+        ):
+            raise ctypes.WinError()  # surface the raw OS error
+        try:
+            needed = wintypes.DWORD(0)
+            advapi32.GetTokenInformation(
+                token, _TOKEN_USER_INFORMATION_CLASS, None, 0, ctypes.byref(needed)
+            )
+            if not needed.value:
+                raise ctypes.WinError()
+            buffer = (ctypes.c_byte * needed.value)()
+            if not advapi32.GetTokenInformation(
+                token,
+                _TOKEN_USER_INFORMATION_CLASS,
+                buffer,
+                needed,
+                ctypes.byref(needed),
+            ):
+                raise ctypes.WinError()
+            # TOKEN_USER begins with a single pointer to the user's SID.
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p)).contents
+            # Keep the backing buffer alive by attaching it to the pointer object.
+            sid._buffer = buffer  # type: ignore[attr-defined]
+            return sid
+        finally:
+            ctypes.windll.kernel32.CloseHandle(token)
+
+    def _apply_windows_owner_only_dacl(path: Path) -> None:
+        """Replace `path`'s DACL with a single read/write entry for this user.
+
+        The DACL is marked protected, so entries inherited from the parent
+        directory are dropped rather than merged.
+
+        Args:
+            path: Debug log file to lock down.
+
+        Raises:
+            OSError: If the DACL cannot be built or applied. Raised via
+                `ctypes.WinError`, which is a factory returning `OSError`.
+        """  # noqa: DOC501, DOC502 - `ctypes.WinError` returns an `OSError`
+        advapi32 = ctypes.windll.advapi32
+        sid = _get_current_user_sid()
+
+        trustee = _TRUSTEE_W(
+            pMultipleTrustee=None,
+            MultipleTrusteeOperation=_NO_MULTIPLE_TRUSTEE,
+            TrusteeForm=_TRUSTEE_IS_SID,
+            TrusteeType=_TRUSTEE_IS_USER,
+            ptstrName=ctypes.cast(sid, ctypes.c_void_p).value,
+        )
+        explicit = _EXPLICIT_ACCESS_W(
+            grfAccessPermissions=_FILE_GENERIC_READ | _FILE_GENERIC_WRITE,
+            grfAccessMode=_SET_ACCESS,
+            grfInheritance=_NO_INHERITANCE,
+            Trustee=trustee,
+        )
+        new_acl = ctypes.c_void_p()
+        result = advapi32.SetEntriesInAclW(
+            1, ctypes.byref(explicit), None, ctypes.byref(new_acl)
+        )
+        if result != 0:  # ERROR_SUCCESS
+            raise ctypes.WinError(result)
+        try:
+            apply_result = advapi32.SetNamedSecurityInfoW(
+                str(path),
+                _SE_FILE_OBJECT,
+                _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                new_acl,
+                None,
+            )
+            if apply_result != 0:  # ERROR_SUCCESS
+                raise ctypes.WinError(apply_result)
+        finally:
+            ctypes.windll.kernel32.LocalFree(new_acl)
+
+
+def resolve_log_level(*, debug_enabled: bool | None = None) -> int:
+    """Resolve the configured runtime logging level.
+
+    Args:
+        debug_enabled: Whether `DEEPAGENTS_CODE_DEBUG` is truthy. When omitted,
+            the current environment is checked.
+
+    Returns:
+        A standard `logging` level integer. Defaults to `DEBUG` when debug file
+        logging is enabled and `INFO` otherwise.
+    """
+    if debug_enabled is None:
+        debug_enabled = is_env_truthy(DEBUG)
+    fallback = logging.DEBUG if debug_enabled else logging.INFO
+    raw = os.environ.get(LOG_LEVEL)
+    if raw is None or not raw.strip():
+        return fallback
+    level = LOG_LEVELS.get(raw.strip().upper())
+    if level is not None:
+        return level
+    valid = ", ".join(LOG_LEVELS)
+    message = f"ignoring invalid {LOG_LEVEL}={raw!r}; expected one of {valid}"
+    # stderr for headless / pre-TUI visibility; the logger so it also lands in
+    # the always-on in-memory buffer and surfaces in the Debug Console (the
+    # buffer is installed before this runs; see __init__.py).
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+    logger.warning("%s", message)
+    return fallback
+
+
+def configure_debug_logging(target: logging.Logger) -> None:
+    """Configure runtime log level and optional file logging for *target*.
+
+    Intended to be called once on the `deepagents_code` package logger; child
+    module loggers reach the same handlers via propagation, so individual modules
+    do not configure logging themselves.
+
+    `DEEPAGENTS_CODE_LOG_LEVEL` controls the package logger level independently of
+    file logging. If it is unset, `DEEPAGENTS_CODE_DEBUG=1` defaults to `DEBUG`;
+    otherwise the runtime level defaults to `INFO`.
+
+    When `DEEPAGENTS_CODE_DEBUG` is truthy, a file handler is attached. The log
+    file defaults to `DEFAULT_DEBUG_FILE` but can be overridden with
+    `DEEPAGENTS_CODE_DEBUG_FILE`. The handler appends (`mode='a'`) so logs are
+    preserved across separate process runs. Calling this again with the same
+    resolved path does not stack duplicate handlers: the existing tagged handler
+    is reused and its level re-applied. If the resolved path changes, the stale
+    handler is closed and replaced.
+
+    The file is created or tightened to user-only access first. If that fails,
+    no file handler is attached: captured MCP server stderr can carry
+    credentials, so no file log is safer than one that could not be secured.
+
+    Args:
+        target: Logger to configure.
+    """
+    debug_enabled = is_env_truthy(DEBUG)
+    level = resolve_log_level(debug_enabled=debug_enabled)
+    target.setLevel(level)
+
+    if not debug_enabled:
+        return
+
+    debug_path = Path(os.environ.get(DEBUG_FILE, DEFAULT_DEBUG_FILE))
+    for existing in list(target.handlers):
+        if not (
+            isinstance(existing, logging.FileHandler)
+            and getattr(existing, _DEBUG_HANDLER_ATTR, False)
+        ):
+            continue
+        if Path(existing.baseFilename) == debug_path:
+            existing.setLevel(level)
+            return
+        # The debug path changed; drop the stale handler before re-attaching so
+        # we don't leak its file descriptor or fan logs out to two files.
+        target.removeHandler(existing)
+        existing.close()
+
+    try:
+        _prepare_debug_file(debug_path)
+    except OSError as exc:
+        # Fail closed. `_prepare_debug_file` opens with `O_NOFOLLOW`, so this
+        # also fires for a symlink planted at `debug_path` — and the
+        # `FileHandler` below would happily follow it, turning a blocked
+        # redirect into a successful one. Captured MCP server stderr can carry
+        # credentials, so skip file logging entirely; the in-memory buffer
+        # still backs the Debug Console.
+        message = (
+            f"could not restrict debug log file {debug_path} to the current "
+            f"user: {exc}. File logging is disabled because captured MCP "
+            f"server stderr may contain credentials. Set "
+            f"{DEBUG_FILE} to a path you own to enable it."
+        )
+        print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+        logger.warning("%s", message)
+        return
+    try:
+        handler = logging.FileHandler(str(debug_path), mode="a")
+    except OSError as exc:
+        message = f"could not open debug log file {debug_path}: {exc}"
+        # stderr for headless / pre-TUI visibility; the logger so it also lands
+        # in the always-on in-memory buffer and surfaces in the Debug Console.
+        print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+        logger.warning("%s", message)
+        return
+    setattr(handler, _DEBUG_HANDLER_ATTR, True)
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
+    target.addHandler(handler)
+
+
+def installed_debug_log_path() -> Path | None:
+    """Return the path of the active debug log file, or `None` if not logging.
+
+    Reflects the file handler actually attached by `configure_debug_logging`,
+    not the current `DEEPAGENTS_CODE_DEBUG` env value. The two diverge when the
+    variable is set after import — e.g. via a project/global `.env` loaded during
+    settings bootstrap — in which case the variable reads truthy but no handler
+    was installed and no log file exists. Callers that surface "full error in
+    <path>" hints must use this rather than the env var to avoid pointing users
+    at a file that was never created.
+    """
+    package_logger = logging.getLogger(__package__ or "deepagents_code")
+    for handler in package_logger.handlers:
+        if isinstance(handler, logging.FileHandler) and getattr(
+            handler, _DEBUG_HANDLER_ATTR, False
+        ):
+            return Path(handler.baseFilename)
+    return None

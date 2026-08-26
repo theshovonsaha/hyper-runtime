@@ -40,6 +40,13 @@ authority-narrowed child runtimes, CLI, and operator UI surfaces. Live-provider
 quality, multi-agent scheduling quality, and adversarial robustness remain
 unestablished.
 
+The coding profile now includes bounded repository text search, exact line
+slices, stale-safe patching against an inspected SHA-256 snapshot, and
+allowlisted process checks. A release-gated vertical slice exercises a real
+`search -> read -> patch -> failing test -> diagnose -> repair -> passing test`
+loop. This establishes local integration behavior, not live-model coding
+quality.
+
 ## Current result
 
 The versioned benchmark contains 16 fixtures and three experimental conditions:
@@ -77,6 +84,16 @@ state plus required and forbidden canonical events and repeat the specialized
 trials to measure deterministic trace reproducibility. These are mechanism
 results with zero model calls, not live-provider evidence.
 
+The stateful agent execution simulation adds 18 end-to-end stories across 10
+declared execution archetypes: conversation, coding, research, retrieval,
+multi-tool work, recovery, provider fallback, human gates, cancellation, and
+adversarial proposals. Deterministic model doubles receive the real context
+packets, tool schemas, native message history, failures, and verified tool
+results. This is `simulated_inference` evidence: it tests agent-loop integration
+and regression behavior, but it is not a population estimate or evidence of
+live-model answer quality. The frozen definition is
+[`evals/agent-simulation.v1.json`](evals/agent-simulation.v1.json).
+
 ## Quick start
 
 Requirements: [Bun](https://bun.sh/) 1.3 or later.
@@ -90,10 +107,43 @@ bun run check
 
 1. strict TypeScript checking for the public packages;
 2. unit, architecture, policy, ledger, and benchmark tests;
-3. the deterministic three-condition evaluation;
-4. generation of `evals/results/latest.json` and `latest.md`.
+3. a standalone real-process check for bounded nonzero-exit diagnostics;
+4. the deterministic three-condition evaluation;
+5. the stateful simulated-inference story suite; and
+6. generation of machine-readable and Markdown reports under `evals/results/`.
 
 No API key or model call is required.
+
+Credentialed coding smoke tests are deliberately separate from the release
+gate. Select providers, explicitly authorize the bounded calls, and run:
+
+```bash
+HYPER_LIVE_EVAL_PROVIDERS=groq,gemini HYPER_LIVE_CODING=1 \
+  bun run eval:live:coding
+```
+
+The smoke task creates an isolated repository, requires search/read/stale-safe
+patch/test behavior, verifies the final file and process observation, probes
+cancellation, records provider-reported token/cache/reasoning usage and cost,
+and deletes the workspace. It defaults to at most two providers; change
+`HYPER_LIVE_CODING_MAX_PROVIDERS` deliberately. Results go to
+`evals/results/live-coding-latest.json` and remain live-model smoke evidence,
+not a general coding-quality claim.
+
+The paired causal live experiment is also opt-in. It asks one selected model
+for the same exact proposal, then replays that proposal through
+reachability-only, authorization-only, and authorization-plus-verification
+conditions. A separate paired pass compares full and phase-selected context:
+
+```bash
+bun run eval:live:mistral:paired
+```
+
+Results go to `evals/results/live-paired-latest.json`. The report includes
+decision accuracy, unauthorized execution, false completion, legitimate
+completion, context recall, and provider-reported input-token reduction. One
+bounded run is mechanism evidence, not a population estimate or security
+certification.
 
 Launch the operator UI and evaluated backend together:
 
@@ -257,7 +307,9 @@ parent intent + actual context + remaining budget
 - Unsupported completion claims are rejected until required evidence has been
   produced by a verified action.
 - Failed actions produce causal records and repeated strategies can pivot
-  without losing observed failure evidence.
+  without losing observed failure evidence. Adapters must explicitly declare
+  when a bounded failure result is observable; execution remains failed and
+  unknown effects remain blocked even when diagnostics are available.
 - Real filesystem paths reject escape and symbolic-link traversal; HTTP targets
   validate allowlists, DNS results, redirects, and response size.
 - JSONL ledgers reload across processes and retain hash-chain verification.

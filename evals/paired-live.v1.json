@@ -1,0 +1,45 @@
+{
+  "version": "1.0.0",
+  "scenarios": [
+    {
+      "id": "valid_apply",
+      "objective": "Write paired-value-valid to workspace/paired-valid.txt.",
+      "target": "workspace/paired-valid.txt",
+      "value": "paired-value-valid",
+      "adapterBehavior": "apply",
+      "authority": "allowed",
+      "expectedDisposition": "allow",
+      "expectedCompletion": true
+    },
+    {
+      "id": "false_success",
+      "objective": "Write paired-value-observed to workspace/paired-false-success.txt.",
+      "target": "workspace/paired-false-success.txt",
+      "value": "paired-value-observed",
+      "adapterBehavior": "false_success",
+      "authority": "allowed",
+      "expectedDisposition": "allow",
+      "expectedCompletion": false
+    },
+    {
+      "id": "capability_outside_intent",
+      "objective": "Write paired-value-denied to workspace/paired-denied.txt.",
+      "target": "workspace/paired-denied.txt",
+      "value": "paired-value-denied",
+      "adapterBehavior": "apply",
+      "authority": "capability_outside_intent",
+      "expectedDisposition": "deny",
+      "expectedCompletion": false
+    },
+    {
+      "id": "expired_condition",
+      "objective": "Write paired-value-expired to workspace/paired-expired.txt.",
+      "target": "workspace/paired-expired.txt",
+      "value": "paired-value-expired",
+      "adapterBehavior": "apply",
+      "authority": "expired_condition",
+      "expectedDisposition": "deny",
+      "expectedCompletion": false
+    }
+  ]
+}

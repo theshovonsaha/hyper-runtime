@@ -8,7 +8,9 @@ import {
   BoundedProcessCapability,
   BoundedChannelCapability,
   ListDirectoryCapability,
+  PatchFileCapability,
   ReadFileCapability,
+  RepositorySearchCapability,
   ReplayableClockCapability,
   RemoteCapabilityAdapter,
   SessionKnowledgeSearchCapability,
@@ -20,6 +22,8 @@ import {
   type FileWriteArgs,
   type HttpGetArgs,
   type ListDirectoryArgs,
+  type PatchFileArgs,
+  type RepositorySearchArgs,
   type ClockArgs,
   type ChannelDeliveryArgs,
   type ProcessArgs,
@@ -96,6 +100,68 @@ function workflowFixture<Args extends Record<string, unknown>>(
 }
 
 describe('safe external capabilities', () => {
+  test('searches repository text with bounded line and snapshot provenance', async () => {
+    const root = temporaryWorkspace();
+    mkdirSync(join(root, 'src'));
+    mkdirSync(join(root, 'node_modules'));
+    writeFileSync(join(root, 'src', 'app.ts'), 'const stable = true;\nconst TODO_FIX = 1;\n');
+    writeFileSync(join(root, 'node_modules', 'ignored.ts'), 'TODO_FIX');
+    const capability = new RepositorySearchCapability(root);
+    expect(capability.manifest.description).toContain('target must be a directory');
+    const fixture = workflowFixture<RepositorySearchArgs>(capability, {
+      id: 'proposal:repository-search', capabilityId: capability.manifest.id,
+      target: 'workspace/', declaredEffects: ['state.read'], risk: 1,
+      expectedEvidence: ['repository_matches_observed'], idempotencyKey: 'search:repository',
+      args: { query: 'TODO_FIX', fileExtensions: ['.ts'] },
+    });
+    const outcome = await new AuthorizedRuntime().execute({
+      runId: 'run:repository-search', now, ...fixture, capability,
+    });
+    expect(outcome.status).toBe('completed');
+    expect(outcome.observation?.value).toMatchObject({
+      query: 'TODO_FIX', filesScanned: 1,
+      matches: [{ path: 'workspace/src/app.ts', line: 2, column: 7, preview: 'const TODO_FIX = 1;', snapshotSha256: expect.any(String) }],
+    });
+  });
+
+  test('applies an exact patch only against the inspected file snapshot', async () => {
+    const root = temporaryWorkspace();
+    mkdirSync(join(root, 'src'));
+    const path = join(root, 'src', 'math.ts');
+    writeFileSync(path, 'export const add = (a: number, b: number) => a - b;\n');
+    const readCapability = new ReadFileCapability(root);
+    const readFixture = workflowFixture<FileReadArgs>(readCapability, {
+      id: 'proposal:patch-read', capabilityId: readCapability.manifest.id,
+      target: 'workspace/src/math.ts', declaredEffects: ['state.read'], risk: 1,
+      expectedEvidence: ['file_snapshot_observed'], idempotencyKey: 'patch:read', args: {},
+    });
+    const read = await new AuthorizedRuntime().execute({ runId: 'run:patch-read', now, ...readFixture, capability: readCapability });
+    const snapshotSha256 = (read.observation?.value as { snapshotSha256: string }).snapshotSha256;
+    const capability = new PatchFileCapability(root);
+    const fixture = workflowFixture<PatchFileArgs>(capability, {
+      id: 'proposal:patch-apply', capabilityId: capability.manifest.id,
+      target: 'workspace/src/math.ts', declaredEffects: ['state.write'], risk: 2,
+      expectedEvidence: ['file_patch_observed'], idempotencyKey: 'patch:apply',
+      args: {
+        expectedPreviousSha256: snapshotSha256,
+        replacements: [{ oldText: 'a - b', newText: 'a + b' }],
+      },
+    });
+    const outcome = await new AuthorizedRuntime().execute({ runId: 'run:patch-apply', now, ...fixture, capability });
+    expect(outcome.status).toBe('completed');
+    expect(readFileSync(path, 'utf8')).toContain('a + b');
+
+    const staleFixture = workflowFixture<PatchFileArgs>(capability, {
+      id: 'proposal:patch-stale', capabilityId: capability.manifest.id,
+      target: 'workspace/src/math.ts', declaredEffects: ['state.write'], risk: 2,
+      expectedEvidence: ['file_patch_observed'], idempotencyKey: 'patch:stale',
+      args: { expectedPreviousSha256: snapshotSha256, replacements: [{ oldText: 'a + b', newText: 'a * b' }] },
+    });
+    const stale = await new AuthorizedRuntime().execute({ runId: 'run:patch-stale', now, ...staleFixture, capability });
+    expect(stale).toMatchObject({ status: 'execution_failed', execution: { errorCode: 'STALE_FILE_PRECONDITION' } });
+    expect(readFileSync(path, 'utf8')).toContain('a + b');
+  });
+
   test('lists a bounded, sorted workspace directory and independently observes it', async () => {
     const root = temporaryWorkspace();
     mkdirSync(join(root, 'docs'));
@@ -367,6 +433,32 @@ describe('safe external capabilities', () => {
     expect(readFileSync(join(root, 'reports/result.txt'), 'utf8')).toBe('verified result');
   });
 
+  test('reads an immutable exact line slice with snapshot provenance', async () => {
+    const root = temporaryWorkspace();
+    writeFileSync(join(root, 'source.ts'), 'one\ntwo\nthree\nfour\n');
+    const capability = new ReadFileCapability(root);
+    const fixture = workflowFixture<FileReadArgs>(capability, {
+      id: 'proposal:line-slice', capabilityId: capability.manifest.id,
+      target: 'workspace/source.ts', declaredEffects: ['state.read'], risk: 1,
+      expectedEvidence: ['file_slice'], idempotencyKey: 'read:line-slice',
+      args: { startLine: 2, endLine: 3 },
+    });
+
+    const outcome = await new AuthorizedRuntime().execute({
+      runId: 'run:line-slice', now, ...fixture, capability,
+    });
+
+    expect(outcome.status).toBe('completed');
+    expect(outcome.observation?.value).toMatchObject({
+      path: 'workspace/source.ts', startLine: 2, endLine: 3, totalLines: 5,
+      text: 'two\nthree\n', truncated: true,
+    });
+    expect(outcome.observation?.value).toMatchObject({
+      snapshotSha256: expect.any(String), sliceSha256: expect.any(String),
+      startByte: 4, endByte: 14,
+    });
+  });
+
   test('rejects traversal and symbolic-link targets', async () => {
     const root = temporaryWorkspace();
     mkdirSync(join(root, 'inside'));
@@ -416,6 +508,7 @@ describe('safe external capabilities', () => {
       allowedExecutables: ['bun'],
       environment: { PATH: process.env.PATH ?? '' },
     });
+    expect(capability.manifest.targetPatterns).toEqual(['workspace/', 'workspace/**']);
     const fixture = workflowFixture<ProcessArgs>(capability, {
       id: 'proposal:process',
       capabilityId: capability.manifest.id,
@@ -439,6 +532,88 @@ describe('safe external capabilities', () => {
       capability,
     });
     expect(outcome.status).toBe('completed');
+  });
+
+  test('observes a known failed process without claiming success', async () => {
+    const root = temporaryWorkspace();
+    const capability = new BoundedProcessCapability(root, {
+      allowedExecutables: ['bun'],
+      environment: { PATH: process.env.PATH ?? '' },
+      maxOutputBytes: 64,
+    });
+    const fixture = workflowFixture<ProcessArgs>(capability, {
+      id: 'proposal:process-diagnostic', capabilityId: capability.manifest.id,
+      target: 'workspace/', declaredEffects: ['process.execute', 'state.read'], risk: 2,
+      expectedEvidence: ['exit_code'], idempotencyKey: 'process:diagnostic',
+      args: {
+        executable: 'bun',
+        arguments: ['-e', "process.stderr.write('DIAGNOSTIC_PROCESS_FAILURE\\n'); process.exit(7)"],
+        expectedExitCode: 0,
+      },
+    });
+
+    const runtime = new AuthorizedRuntime();
+    const outcome = await runtime.execute({ runId: 'run:process-diagnostic', now, ...fixture, capability });
+
+    expect(capability.manifest.inputSchema?.properties?.executable?.enum).toEqual(['bun']);
+    expect(outcome).toMatchObject({
+      status: 'execution_failed', claimedSuccess: false,
+      execution: { errorCode: 'UNEXPECTED_EXIT_CODE', effectState: 'applied', failureObservationAvailable: true },
+      observation: { exists: true, value: { exitCode: 7, timedOut: false } },
+    });
+    expect(outcome.observation?.value).toMatchObject({ stdout: expect.any(String), stderr: expect.any(String) });
+    expect(runtime.ledger.all().map(event => event.type)).toContain('state.observed');
+    expect(runtime.ledger.all().at(-1)).toMatchObject({ type: 'action.receipt', payload: { status: 'execution_failed', failureObserved: true } });
+  });
+
+  test('keeps a timed-out process blocked for reconciliation while exposing its bounded result', async () => {
+    const root = temporaryWorkspace();
+    const capability = new BoundedProcessCapability(root, {
+      allowedExecutables: ['bun'], environment: { PATH: process.env.PATH ?? '' }, maxTimeoutMs: 20,
+    });
+    const fixture = workflowFixture<ProcessArgs>(capability, {
+      id: 'proposal:process-timeout', capabilityId: capability.manifest.id,
+      target: 'workspace/', declaredEffects: ['process.execute', 'state.read'], risk: 2,
+      expectedEvidence: ['exit_code'], idempotencyKey: 'process:timeout',
+      args: { executable: 'bun', arguments: ['-e', 'await Bun.sleep(500)'], timeoutMs: 20 },
+    });
+
+    const outcome = await new AuthorizedRuntime().execute({ runId: 'run:process-timeout', now, ...fixture, capability });
+    expect(outcome).toMatchObject({
+      status: 'execution_failed', claimedSuccess: false,
+      execution: {
+        errorCode: 'PROCESS_TIMEOUT', effectState: 'partially_applied', retrySafe: false,
+        reconciliationRequired: true, failureObservationAvailable: true,
+      },
+      observation: { exists: true, value: { timedOut: true } },
+    });
+  });
+
+  test('stops an in-flight process on operator cancellation without making retry claims', async () => {
+    const root = temporaryWorkspace();
+    const capability = new BoundedProcessCapability(root, {
+      allowedExecutables: ['bun'], environment: { PATH: process.env.PATH ?? '' }, maxTimeoutMs: 2_000,
+    });
+    const fixture = workflowFixture<ProcessArgs>(capability, {
+      id: 'proposal:process-cancel', capabilityId: capability.manifest.id,
+      target: 'workspace/', declaredEffects: ['process.execute', 'state.read'], risk: 2,
+      expectedEvidence: ['exit_code'], idempotencyKey: 'process:cancel',
+      args: { executable: 'bun', arguments: ['-e', 'await Bun.sleep(500)'], timeoutMs: 1_000 },
+    });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+
+    const outcome = await new AuthorizedRuntime().execute({
+      runId: 'run:process-cancel', now, ...fixture, capability, signal: controller.signal,
+    });
+    expect(outcome).toMatchObject({
+      status: 'execution_failed', claimedSuccess: false,
+      execution: {
+        errorCode: 'PROCESS_CANCELLED', effectState: 'partially_applied', retrySafe: false,
+        reconciliationRequired: true, failureObservationAvailable: true,
+      },
+      observation: { exists: true, value: { cancelled: true } },
+    });
   });
 
   test('validates every HTTP target before a mocked request', async () => {

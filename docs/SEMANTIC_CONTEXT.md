@@ -71,6 +71,26 @@ authority. When embeddings are unavailable, context records the degraded mode
 and continues with bounded lexical/temporal/relationship retrieval. See
 `AGENTIC_RAG.md`.
 
+## Shadow-learned selection
+
+`LinearShadowContextSelector` can replay serializable weights learned from
+prior evidence trajectories and recommend a ranking beside the deterministic
+compiler. The recommendation is deliberately advisory:
+
+- `packet.items` remains the deterministic, policy-independent result;
+- the audit records deterministic IDs, recommended IDs, overlap, misses, and
+  extras with `applied: false`;
+- directive and constraint sources are pinned by the deterministic boundary;
+- a selector exception is recorded and cannot fail context compilation; and
+- the selector has no grant, policy, capability, execution, or verification
+  interface.
+
+`assessShadowSelectorPromotion` permits only a reviewed experiment when task
+completion and recall do not regress, unauthorized effects and false
+completion do not increase, and average input tokens decrease. It never
+activates a selector automatically. This makes collected experience useful for
+optimization without converting correlation into authority.
+
 ## Deliberation without hidden chain-of-thought
 
 The runtime does not request or store private model reasoning. It stores

@@ -1,4 +1,6 @@
 import type {
+  AgentMessage,
+  AgentToolResultBlock,
   ActionOutcome,
   ActionProposal,
   CapabilityExecution,
@@ -15,6 +17,7 @@ import type {
   EvidenceRef,
   IntentContract,
   LedgerEvent,
+  ModelProposalResult,
   PolicyDecision,
   ProgressAssessment,
   WorkflowCompleteProposal,
@@ -26,9 +29,10 @@ import type {
   WorkflowNodeResult,
   SemanticVerificationRequest,
   VerificationResult,
+  VerifiedToolResultProjection,
   Observation,
 } from '@hyper/contracts';
-import { DynamicContextCompiler, detectContextSignals, serializeBoundedModelData } from '@hyper/context';
+import { DynamicContextCompiler, detectContextSignals, renderContextPacket, serializeBoundedModelData } from '@hyper/context';
 import {
   validateJsonSchema,
   type ChildRuntimeExecutor,
@@ -181,6 +185,15 @@ export interface WorkflowResumeSeed {
   causalHistory: CausalRecord[];
   strategies: string[];
   activeStrategyId: string;
+  agentMessages?: AgentMessage[];
+  pendingNativeProposals?: PendingNativeProposal[];
+}
+
+export interface PendingNativeProposal {
+  proposal: Extract<WorkflowStepRecord['proposal'], { kind: 'action' }>;
+  toolCallId: string;
+  toolName: string;
+  model: string;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -217,6 +230,12 @@ export function rebuildWorkflowResumeSeedFromEvents(
   const causalHistory = Array.isArray(checkpoint?.causalHistory)
     ? structuredClone(checkpoint.causalHistory as CausalRecord[])
     : [];
+  const agentMessages = Array.isArray(checkpoint?.agentMessages)
+    ? structuredClone(checkpoint.agentMessages as AgentMessage[])
+    : undefined;
+  const pendingNativeProposals = Array.isArray(checkpoint?.pendingNativeProposals)
+    ? structuredClone(checkpoint.pendingNativeProposals as PendingNativeProposal[])
+    : undefined;
   const strategies = new Set(stringArray(checkpoint?.strategies));
   let activeStrategyId = typeof checkpoint?.activeStrategyId === 'string'
     ? checkpoint.activeStrategyId
@@ -310,6 +329,8 @@ export function rebuildWorkflowResumeSeedFromEvents(
     causalHistory,
     strategies: [...strategies],
     activeStrategyId,
+    ...(agentMessages ? { agentMessages } : {}),
+    ...(pendingNativeProposals ? { pendingNativeProposals } : {}),
   };
 }
 
@@ -536,7 +557,7 @@ export class CausalProgressOracle {
       outcome.status === 'execution_failed'
       && (
         outcome.execution?.reconciliationRequired
-        || ['applied', 'reconciled', 'unknown', 'partially_applied'].includes(
+        || ['unknown', 'partially_applied'].includes(
           outcome.execution?.effectState ?? '',
         )
       )
@@ -621,6 +642,80 @@ function observationSource(
   };
 }
 
+/** Builds the small inference payload from a complete canonical outcome. Raw
+ * observations remain in the ledger; this projection is data, never authority. */
+export function projectVerifiedToolResult(
+  callId: string,
+  action: ActionProposal,
+  outcome: ActionOutcome,
+  maximumCharacters = 12_000,
+): VerifiedToolResultProjection {
+  const full = serializeBoundedModelData(outcome.observation?.value ?? null, 64_000);
+  const content = serializeBoundedModelData(outcome.observation?.value ?? null, maximumCharacters);
+  const observationRefs = outcome.observation?.evidence.map(item => item.id) ?? [];
+  const evidenceRefs = outcome.verification?.evidence.map(item => item.id) ?? [];
+  const completed = outcome.status === 'completed' && outcome.verification?.passed === true;
+  return {
+    callId,
+    capabilityId: action.capabilityId,
+    target: action.target,
+    status: completed ? 'completed' : 'failed',
+    summary: outcome.execution?.summary
+      ?? (completed ? `Verified ${action.capabilityId} at ${action.target}.` : `The ${action.capabilityId} action did not verify.`),
+    content,
+    evidenceRefs,
+    observationRefs,
+    ...(full.length > content.length ? {
+      omittedContentRef: observationRefs[0] ?? `observation:${action.id}`,
+    } : {}),
+    ...(outcome.verification?.limitations?.length
+      ? { limitations: [...outcome.verification.limitations] }
+      : {}),
+  };
+}
+
+function toolResultMessage(
+  runId: string,
+  step: number,
+  callName: string,
+  projection: VerifiedToolResultProjection,
+  createdAt: string,
+): AgentMessage {
+  const block: AgentToolResultBlock = {
+    type: 'tool_result',
+    callId: projection.callId,
+    name: callName,
+    status: projection.status,
+    summary: projection.summary,
+    content: serializeBoundedModelData({
+      status: projection.status,
+      capabilityId: projection.capabilityId,
+      target: projection.target,
+      summary: projection.summary,
+      observation: JSON.parse(projection.content),
+      evidenceRefs: projection.evidenceRefs,
+      limitations: projection.limitations ?? [],
+      omittedContentRef: projection.omittedContentRef ?? null,
+    }, 14_000),
+    evidenceRefs: projection.evidenceRefs,
+    observationRefs: projection.observationRefs,
+    ...(projection.omittedContentRef ? { omittedContentRef: projection.omittedContentRef } : {}),
+    ...(projection.status !== 'completed' ? { isError: true } : {}),
+  };
+  return {
+    id: `message:${runId}:tool:${step}:${projection.callId}`,
+    role: 'tool',
+    content: [block],
+    createdAt,
+  };
+}
+
+function durableAgentMessage(message: AgentMessage): AgentMessage {
+  const durable = structuredClone(message);
+  delete durable.providerState;
+  return durable;
+}
+
 export class WorkflowRunner {
   readonly ledger: HashChainLedger;
   private readonly completionOracle: CompletionOracle;
@@ -649,6 +744,8 @@ export class WorkflowRunner {
     const correctionApplications = new Map<string, number>();
     let pendingCorrection: PendingCorrection | undefined;
     const causalHistory: CausalRecord[] = seed?.causalHistory.map(record => structuredClone(record)) ?? [];
+    const agentMessages: AgentMessage[] = seed?.agentMessages?.map(message => structuredClone(message)) ?? [];
+    const pendingNativeProposals: PendingNativeProposal[] = seed?.pendingNativeProposals?.map(item => structuredClone(item)) ?? [];
     const sources = [...(seed?.sources ?? []), ...definition.sources].map(source => structuredClone(source));
     const satisfiedEvidence = new Set(seed?.satisfiedEvidence ?? []);
     const strategies = new Set(seed?.strategies ?? [definition.initialStrategyId]);
@@ -680,12 +777,17 @@ export class WorkflowRunner {
 
     const checkpoint = (nextStep: number) => this.ledger.append(definition.runId, 'workflow.checkpoint', {
       nextStep,
-      steps,
+      steps: steps.map(step => ({
+        ...structuredClone(step),
+        ...(step.assistantMessage ? { assistantMessage: durableAgentMessage(step.assistantMessage) } : {}),
+      })),
       sources,
       satisfiedEvidence: [...satisfiedEvidence],
       causalHistory,
       strategies: [...strategies],
       activeStrategyId,
+      agentMessages: agentMessages.map(durableAgentMessage),
+      pendingNativeProposals,
     });
 
     for (let stepNumber = steps.length + 1; stepNumber <= maxSteps; stepNumber += 1) {
@@ -765,22 +867,60 @@ export class WorkflowRunner {
         excludedSourceIds: packet.excludedSourceIds,
       }, this.ledger, definition.runId);
 
-      let modelResult;
+      if (agentMessages.length === 0) {
+        agentMessages.push({
+          id: `message:${definition.runId}:user:${packet.id}`,
+          role: 'user',
+          content: [{ type: 'text', text: `CURRENT TASK\n${renderContextPacket(packet)}` }],
+          createdAt: now,
+        });
+      }
+
+      let modelResult: ModelProposalResult;
+      const queuedNativeProposal = pendingNativeProposals.shift();
       try {
-        modelResult = await this.options.model.propose(
-          packet,
-          capabilityManifests,
-          {
-            intentId: definition.intent.id,
-            principalId: definition.intent.principals[0] ?? '',
-            authorizedCapabilityIds: capabilityManifests.map(manifest => manifest.id),
-            requiredConditionIds: definition.intent.requiredConditionIds,
-            requiredEvidence: definition.intent.requiredEvidence,
-            riskBudget: definition.intent.riskBudget,
-            activeStrategyId,
-          },
-          definition.signal,
-        );
+        if (queuedNativeProposal) {
+          modelResult = {
+            proposal: queuedNativeProposal.proposal,
+            proposalToolCallId: queuedNativeProposal.toolCallId,
+            proposalToolName: queuedNativeProposal.toolName,
+            model: queuedNativeProposal.model,
+            usage: { inputTokens: 0, outputTokens: 0, latencyMs: 0 },
+          };
+          this.ledger.append(definition.runId, 'model.queued_tool_selected', {
+            step: stepNumber,
+            toolCallId: queuedNativeProposal.toolCallId,
+            toolName: queuedNativeProposal.toolName,
+            proposal: queuedNativeProposal.proposal,
+          });
+        } else {
+          modelResult = await this.options.model.propose(
+            packet,
+            capabilityManifests,
+            {
+              intentId: definition.intent.id,
+              principalId: definition.intent.principals[0] ?? '',
+              authorizedCapabilityIds: capabilityManifests.map(manifest => manifest.id),
+              requiredConditionIds: definition.intent.requiredConditionIds,
+              requiredEvidence: definition.intent.requiredEvidence,
+              riskBudget: definition.intent.riskBudget,
+              activeStrategyId,
+              agentMessages,
+              completionEvidenceRefs: definition.intent.requiredEvidence.every(value => satisfiedEvidence.has(value))
+                ? verifiedCompletionEvidence(definition.intent.requiredEvidence, steps)
+                : [],
+              inferencePurpose: definition.intent.requiredEvidence.every(value => satisfiedEvidence.has(value))
+                ? 'completion'
+                : packet.phase === 'diagnose' || packet.phase === 'recover'
+                  ? 'diagnosis'
+                  : 'tool_selection',
+            },
+            definition.signal,
+          );
+          for (const additional of modelResult.additionalProposals ?? []) {
+            pendingNativeProposals.push({ ...structuredClone(additional), model: modelResult.model });
+          }
+        }
       } catch (error) {
         if (definition.signal?.aborted) {
           return this.finish(definition.runId, 'cancelled', steps, activeStrategyId, {
@@ -855,6 +995,14 @@ export class WorkflowRunner {
       }
 
       const proposal = modelResult.proposal;
+      if (modelResult.assistantMessage) {
+        agentMessages.push(structuredClone(modelResult.assistantMessage));
+        this.ledger.append(definition.runId, 'model.assistant_message', {
+          step: stepNumber,
+          message: durableAgentMessage(modelResult.assistantMessage),
+          providerContinuationRetainedInMemory: !!modelResult.assistantMessage.providerState,
+        });
+      }
       if (definition.signal?.aborted) {
         return this.finish(definition.runId, 'cancelled', steps, activeStrategyId, {
           reasonCodes: ['WORKFLOW_ABORTED_AFTER_MODEL_REQUEST'],
@@ -930,6 +1078,7 @@ export class WorkflowRunner {
           packetId: packet.id,
           proposal,
           usage: modelResult.usage,
+          assistantMessage: modelResult.assistantMessage,
         });
         return this.finish(definition.runId, 'needs_input', steps, activeStrategyId, {
           question: proposal.question,
@@ -956,6 +1105,7 @@ export class WorkflowRunner {
           packetId: packet.id,
           proposal,
           usage: modelResult.usage,
+          assistantMessage: modelResult.assistantMessage,
         });
         strategies.add(proposal.strategyId);
         activeStrategyId = proposal.strategyId;
@@ -1002,6 +1152,7 @@ export class WorkflowRunner {
           packetId: packet.id,
           proposal,
           usage: modelResult.usage,
+          assistantMessage: modelResult.assistantMessage,
         });
         this.ledger.append(definition.runId, 'workflow.completion_checked', {
           step: stepNumber,
@@ -1183,6 +1334,7 @@ export class WorkflowRunner {
         outcome,
         causal,
         progress,
+        assistantMessage: modelResult.assistantMessage,
       };
       steps.push(step);
       this.ledger.append(definition.runId, 'workflow.progress_assessed', {
@@ -1193,6 +1345,25 @@ export class WorkflowRunner {
       const observed = observationSource(definition.runId, stepNumber, outcome, now);
       if (observed) sources.push(observed);
       sources.push(diagnosticSource(definition.runId, stepNumber, causal, progress, now));
+      const nativeCall = modelResult.proposalToolCallId && modelResult.proposalToolName
+        ? { callId: modelResult.proposalToolCallId, name: modelResult.proposalToolName }
+        : undefined;
+      if (nativeCall) {
+        const projection = projectVerifiedToolResult(nativeCall.callId, proposal.action, outcome);
+        const resultMessage = toolResultMessage(
+          definition.runId,
+          stepNumber,
+          nativeCall.name,
+          projection,
+          now,
+        );
+        agentMessages.push(resultMessage);
+        this.ledger.append(definition.runId, 'model.tool_result_message', {
+          step: stepNumber,
+          message: resultMessage,
+          projection,
+        });
+      }
 
       if (
         definition.completeAfterVerifiedAction

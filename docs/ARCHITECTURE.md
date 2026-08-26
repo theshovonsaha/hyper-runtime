@@ -4,6 +4,10 @@
 
 Intent may be probabilistic. Authority and completion are not.
 
+Model-visible history, retrieval, and tools are selected independently per
+task. See [Task-scoped connection architecture](CONNECTION_ARCHITECTURE.md) for
+the minimal assistant loop and its native tool-call migration boundary.
+
 Hyper-Runtime therefore separates five concerns that the legacy prototype
 mixed inside one orchestration loop:
 
@@ -82,7 +86,11 @@ A capability exposes:
 The original evaluated adapter remains in-memory. Version 0.2 also provides:
 
 - workspace file read and atomic write with containment and symlink rejection;
-- shell-free, executable-allowlisted processes with time and output bounds;
+- bounded repository text search with ignored dependency/build directories,
+  exact line locations, and per-file snapshot digests;
+- exact stale-safe file patching that requires the digest of a previously
+  inspected snapshot and rejects missing or ambiguous replacement context;
+- shell-free, executable-allowlisted processes with time and UTF-8 byte bounds;
 - allowlisted HTTP GET with DNS/IP, redirect, and response-size validation;
 - allowlisted environment credential lookup; and
 - a manifest-first remote capability boundary suitable for an MCP client;
@@ -164,6 +172,18 @@ next action pass. Applications and subsequent outcomes are canonical events.
 Rules do not grant authority, change the intent, learn themselves, or prove
 that their natural-language instruction caused an improvement.
 
+A process adapter advertises its exact executable allowlist as an enum in the
+model-facing schema. A known non-zero exit remains `execution_failed`, but its
+bounded exit code, stdout, and stderr are committed as a failure-diagnostic
+observation and may feed the next diagnosis pass. A timeout can expose the
+result observed at termination while its effect remains partially applied and
+reconciliation-required. Thrown or otherwise unknown effects expose no
+invented observation and still stop blind continuation.
+The standalone `process:check` release gate verifies real nonzero stderr
+capture and in-stream byte capping outside Bun's embedded unit-test runner;
+unit fixtures separately cover timeout, cancellation, and failed-result ledger
+semantics.
+
 The package also interprets inert compositional nodes: sequence, conservative
 bounded parallel, deterministic adapter, schema-bounded model operation,
 choice, bounded loop, human gate, verifier, and authority-narrowed subworkflow.
@@ -235,7 +255,11 @@ with all configured manifests while retaining normal approval boundaries.
 ### `@hyper/evals`
 
 Owns fixtures, condition runners, metric definitions, acceptance criteria, and
-result serialization. It imports public APIs only.
+result serialization. It imports public APIs only. Evidence modes remain
+explicit: deterministic fixtures exercise mechanisms with zero model passes;
+stateful simulated inference exercises the real model/workflow message loop;
+credentialed provider runs are reported separately. The simulated-inference
+suite must never be presented as live-model quality or population coverage.
 
 ## Transition semantics
 

@@ -32,6 +32,13 @@ profile is the enforceable source: the workflow context budget reserves output
 and stable-prompt headroom, while the model boundary performs a second preflight
 check before transport.
 
+The profile maximum is an absolute capability ceiling, not the reservation for
+every call. Current request ceilings are 768 tokens for fast chat, 2,048 for
+reasoned chat and canonical JSON proposals, 1,024 for fast synthesis, and up to
+3,072 for agent-result synthesis. This prevents providers that enforce
+token-per-minute limits against input plus requested maximum output from
+rejecting short chat because a model advertises an 8,192-token maximum.
+
 Provider usage is canonical after a response. The ledger records actual input,
 output, cached-input, cache-write, reasoning, and total tokens when the provider
 exposes them. Cost is computed only when explicit per-million-token rates exist.
@@ -45,6 +52,13 @@ fallback routes must pass a cached model-catalog and connectivity preflight;
 unknown models and unreachable local engines are recorded and removed before
 they consume workflow proposal attempts. Explicit custom primary models remain
 allowed because provider catalogs can lag new releases.
+
+Route failures are normalized into authentication/access, billing/quota,
+rate-limit, request-budget, unreachable, transient-provider, model-protocol,
+or unknown categories. Account, request, and connectivity failures open a
+bounded cross-run cooldown in the HTTP service, while proposal-protocol errors
+remain eligible for bounded workflow repair and fallback. Classification and
+retryability are canonical event fields; they never change tool authority.
 
 The proposal prompt has a stable system prefix containing runtime rules and
 capability schemas. Per-pass scope and context live in the dynamic user message.
@@ -87,6 +101,37 @@ are live-model evidence and are written to
 `evals/results/live-provider-latest.json`; they are not part of the deterministic
 release gate because credentials, network conditions, and provider behavior are
 external variables.
+
+`bun run eval:live:mistral` is the reproducible single-provider smoke path. It
+pins `mistral-small-2603` rather than the moving `latest` alias and exercises a
+bounded concise-chat response, native tool selection, prompt-injection
+resistance, context-target recall, provider token accounting, latency, and
+already-cancelled request handling. With explicit authorization for the larger
+temporary-workspace experiment, `bun run eval:live:mistral:coding` runs the same
+Mistral route through the observed search/read/patch/test workflow. Neither
+command is part of `bun run check`, so credentials alone never trigger a paid
+network request.
+
+`bun run eval:live:coding` adds an execution-level coding smoke test behind
+`HYPER_LIVE_CODING=1`. It never infers consent merely because credentials are
+present. The benchmark limits providers, steps, wall time, process time, and
+captured output; grades observed repository/test state rather than completion
+text; and writes a distinct `live-coding-latest.json` receipt.
+Each provider pass is itemized with inference purpose, proposal kind, actual
+input/output/cache/reasoning tokens, latency, estimated tokens, and estimate
+error so context growth can be localized to a specific call. Policy traces also
+retain the proposed capability, target, disposition, and exact reason codes, so
+a denied process target can be diagnosed from the saved receipt without
+reconstructing transient model state.
+
+The built-in live-eval aliases were checked on 2026-08-25 against primary
+provider catalogs: [OpenAI models](https://developers.openai.com/api/docs/models),
+[Anthropic models](https://platform.claude.com/docs/en/models/overview),
+[Gemini models](https://ai.google.dev/gemini-api/docs/models), and
+[Groq supported models](https://console.groq.com/docs/models). Runtime UI model
+discovery remains preferable because catalogs change. Providers without a
+stable documented alias in this adapter require an explicit model environment
+value instead of receiving a guessed model ID.
 
 The deterministic provider-intelligence suite mocks both OpenAI-compatible and
 Anthropic contracts, hostile usage fields, context overflow, resource admission,

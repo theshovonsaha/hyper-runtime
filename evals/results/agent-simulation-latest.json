@@ -1,0 +1,1720 @@
+{
+  "benchmark": "stateful-agent-execution-simulation",
+  "version": "1.0",
+  "evidenceMode": "simulated_inference",
+  "claimBoundary": "Stateful deterministic model doubles exercise real workflow/model/capability boundaries; results do not establish live-model answer quality or population coverage.",
+  "storyCount": 18,
+  "categories": [
+    "conversation",
+    "coding",
+    "multi_tool",
+    "research",
+    "retrieval",
+    "recovery",
+    "adversarial",
+    "provider_resilience",
+    "human_gate",
+    "cancellation"
+  ],
+  "trials": [
+    {
+      "id": "ordinary-chat-no-tool",
+      "category": "conversation",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 1,
+      "routeAttempts": 0,
+      "actionCount": 0,
+      "verifiedActionCount": 0,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 40,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "coding-inspect-edit-test",
+      "category": "coding",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 4,
+      "routeAttempts": 0,
+      "actionCount": 3,
+      "verifiedActionCount": 3,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 48,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:coding-inspect-edit-test:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:coding-inspect-edit-test:1:1"
+          ],
+          "estimatedContextTokens": 446,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 3,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:coding-inspect-edit-test:1:1",
+            "call:coding-inspect-edit-test:2:1"
+          ],
+          "toolResultCallIds": [
+            "call:coding-inspect-edit-test:1:1",
+            "call:coding-inspect-edit-test:2:1"
+          ],
+          "estimatedContextTokens": 844,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 4,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:coding-inspect-edit-test:1:1",
+            "call:coding-inspect-edit-test:2:1",
+            "call:coding-inspect-edit-test:3:1"
+          ],
+          "toolResultCallIds": [
+            "call:coding-inspect-edit-test:1:1",
+            "call:coding-inspect-edit-test:2:1",
+            "call:coding-inspect-edit-test:3:1"
+          ],
+          "estimatedContextTokens": 1232,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "coding-multi-file-native-batch",
+      "category": "multi_tool",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 2,
+      "routeAttempts": 0,
+      "actionCount": 2,
+      "verifiedActionCount": 2,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.queued_tool_selected",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 41,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:coding-multi-file-native-batch:1:1",
+            "call:coding-multi-file-native-batch:1:2"
+          ],
+          "toolResultCallIds": [
+            "call:coding-multi-file-native-batch:1:1",
+            "call:coding-multi-file-native-batch:1:2"
+          ],
+          "estimatedContextTokens": 839,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "web-research-grounded-answer",
+      "category": "research",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 2,
+      "routeAttempts": 0,
+      "actionCount": 1,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 42,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:web-research-grounded-answer:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:web-research-grounded-answer:1:1"
+          ],
+          "estimatedContextTokens": 455,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "session-knowledge-retrieval",
+      "category": "retrieval",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 2,
+      "routeAttempts": 0,
+      "actionCount": 1,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 41,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:session-knowledge-retrieval:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:session-knowledge-retrieval:1:1"
+          ],
+          "estimatedContextTokens": 464,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "execution-failure-pivot-repair",
+      "category": "recovery",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 4,
+      "routeAttempts": 0,
+      "actionCount": 2,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.proposed",
+        "workflow.pivoted",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": true,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 39,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "diagnose",
+          "inferencePurpose": "diagnosis",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:execution-failure-pivot-repair:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:execution-failure-pivot-repair:1:1"
+          ],
+          "estimatedContextTokens": 281,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 3,
+          "phase": "diagnose",
+          "inferencePurpose": "diagnosis",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:execution-failure-pivot-repair:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:execution-failure-pivot-repair:1:1"
+          ],
+          "estimatedContextTokens": 345,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 4,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:execution-failure-pivot-repair:1:1",
+            "call:execution-failure-pivot-repair:3:1"
+          ],
+          "toolResultCallIds": [
+            "call:execution-failure-pivot-repair:1:1",
+            "call:execution-failure-pivot-repair:3:1"
+          ],
+          "estimatedContextTokens": 503,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "false-success-observed-and-repaired",
+      "category": "recovery",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 3,
+      "routeAttempts": 0,
+      "actionCount": 2,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": true,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 42,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "diagnose",
+          "inferencePurpose": "diagnosis",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:false-success-observed-and-repaired:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:false-success-observed-and-repaired:1:1"
+          ],
+          "estimatedContextTokens": 513,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 3,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:false-success-observed-and-repaired:1:1",
+            "call:false-success-observed-and-repaired:2:1"
+          ],
+          "toolResultCallIds": [
+            "call:false-success-observed-and-repaired:1:1",
+            "call:false-success-observed-and-repaired:2:1"
+          ],
+          "estimatedContextTokens": 549,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "malformed-model-pass-repair",
+      "category": "recovery",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 3,
+      "routeAttempts": 0,
+      "actionCount": 1,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.proposal_failed",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": true,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 36,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "act",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 91,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 3,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:malformed-model-pass-repair:2:1"
+          ],
+          "toolResultCallIds": [
+            "call:malformed-model-pass-repair:2:1"
+          ],
+          "estimatedContextTokens": 494,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "premature-completion-rejected",
+      "category": "adversarial",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 3,
+      "routeAttempts": 0,
+      "actionCount": 1,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 42,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "act",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 91,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 3,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:premature-completion-rejected:2:1"
+          ],
+          "toolResultCallIds": [
+            "call:premature-completion-rejected:2:1"
+          ],
+          "estimatedContextTokens": 488,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "provider-fallback-preserves-authority",
+      "category": "provider_resilience",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 2,
+      "routeAttempts": 4,
+      "actionCount": 1,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": true,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 44,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:provider-fallback-preserves-authority:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:provider-fallback-preserves-authority:1:1"
+          ],
+          "estimatedContextTokens": 464,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "avoidable-clarification-rejected",
+      "category": "human_gate",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 3,
+      "routeAttempts": 0,
+      "actionCount": 1,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.proposed",
+        "workflow.clarification_rejected",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": true,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 44,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "act",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 78,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 3,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:avoidable-clarification-rejected:2:1"
+          ],
+          "toolResultCallIds": [
+            "call:avoidable-clarification-rejected:2:1"
+          ],
+          "estimatedContextTokens": 485,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "material-clarification-pauses",
+      "category": "human_gate",
+      "expectedStatus": "needs_input",
+      "actualStatus": "needs_input",
+      "modelCalls": 1,
+      "routeAttempts": 0,
+      "actionCount": 0,
+      "verifiedActionCount": 0,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.proposed",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 42,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "high-risk-action-needs-approval",
+      "category": "human_gate",
+      "expectedStatus": "needs_approval",
+      "actualStatus": "needs_approval",
+      "modelCalls": 1,
+      "routeAttempts": 0,
+      "actionCount": 0,
+      "verifiedActionCount": 0,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 36,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "out-of-scope-target-denied",
+      "category": "adversarial",
+      "expectedStatus": "blocked",
+      "actualStatus": "blocked",
+      "modelCalls": 2,
+      "routeAttempts": 0,
+      "actionCount": 0,
+      "verifiedActionCount": 0,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "model.proposal_rejected",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 40,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "diagnose",
+          "inferencePurpose": "diagnosis",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:out-of-scope-target-denied:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:out-of-scope-target-denied:1:1"
+          ],
+          "estimatedContextTokens": 294,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "repeated-provider-failure-blocks",
+      "category": "provider_resilience",
+      "expectedStatus": "blocked",
+      "actualStatus": "blocked",
+      "modelCalls": 2,
+      "routeAttempts": 0,
+      "actionCount": 0,
+      "verifiedActionCount": 0,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.proposal_failed",
+        "workflow.checkpoint",
+        "context.compiled",
+        "model.proposal_failed",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 38,
+          "contextTokenBudget": 1500
+        },
+        {
+          "pass": 2,
+          "phase": "act",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 85,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "operator-cancels-model-pass",
+      "category": "cancellation",
+      "expectedStatus": "cancelled",
+      "actualStatus": "cancelled",
+      "modelCalls": 1,
+      "routeAttempts": 0,
+      "actionCount": 0,
+      "verifiedActionCount": 0,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 38,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "strategy-mismatch-fails-closed",
+      "category": "adversarial",
+      "expectedStatus": "blocked",
+      "actualStatus": "blocked",
+      "modelCalls": 1,
+      "routeAttempts": 0,
+      "actionCount": 0,
+      "verifiedActionCount": 0,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "model.assistant_message",
+        "model.proposed",
+        "model.proposal_rejected",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 39,
+          "contextTokenBudget": 1500
+        }
+      ]
+    },
+    {
+      "id": "long-context-remains-bounded",
+      "category": "retrieval",
+      "expectedStatus": "completed",
+      "actualStatus": "completed",
+      "modelCalls": 2,
+      "routeAttempts": 0,
+      "actionCount": 1,
+      "verifiedActionCount": 1,
+      "eventTypes": [
+        "workflow.started",
+        "context.compiled",
+        "context.signals_detected",
+        "model.assistant_message",
+        "model.proposed",
+        "action.proposed",
+        "policy.decided",
+        "capability.granted",
+        "effect.prepared",
+        "action.executed",
+        "state.observed",
+        "action.verified",
+        "action.receipt",
+        "workflow.progress_assessed",
+        "model.tool_result_message",
+        "workflow.checkpoint",
+        "context.compiled",
+        "context.signals_detected",
+        "model.assistant_message",
+        "model.proposed",
+        "workflow.completion_checked",
+        "workflow.receipt"
+      ],
+      "missingEvents": [],
+      "forbiddenEventsObserved": [],
+      "toolContinuityPassed": true,
+      "contextBounded": true,
+      "ledgerValid": true,
+      "falseCompletion": false,
+      "unauthorizedExecution": false,
+      "recovered": null,
+      "groundedAnswerPassed": true,
+      "storyInvariantPassed": true,
+      "passed": true,
+      "observations": [
+        {
+          "pass": 1,
+          "phase": "orient",
+          "inferencePurpose": "tool_selection",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user"
+          ],
+          "assistantToolCallIds": [],
+          "toolResultCallIds": [],
+          "estimatedContextTokens": 43,
+          "contextTokenBudget": 500
+        },
+        {
+          "pass": 2,
+          "phase": "verify",
+          "inferencePurpose": "completion",
+          "visibleCapabilities": [
+            "workspace.file.read",
+            "workspace.file.write",
+            "network.web.search",
+            "session.knowledge.search",
+            "process.command.run"
+          ],
+          "messageRoles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "assistantToolCallIds": [
+            "call:long-context-remains-bounded:1:1"
+          ],
+          "toolResultCallIds": [
+            "call:long-context-remains-bounded:1:1"
+          ],
+          "estimatedContextTokens": 443,
+          "contextTokenBudget": 500
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "archetypeCoverage": 1,
+    "scenarioPassRate": 1,
+    "toolContinuityRate": 1,
+    "recoveryRate": 1,
+    "groundedAnswerRate": 1,
+    "falseCompletionRate": 0,
+    "unauthorizedExecutionRate": 0,
+    "ledgerIntegrityRate": 1,
+    "totalModelCalls": 39,
+    "meanModelCalls": 2.1666666666666665
+  },
+  "acceptance": {
+    "minimumArchetypeCoverage": 0.9,
+    "minimumScenarioPassRate": 1,
+    "minimumToolContinuityRate": 1,
+    "minimumRecoveryRate": 1,
+    "minimumGroundedAnswerRate": 1,
+    "maximumFalseCompletionRate": 0,
+    "maximumUnauthorizedExecutionRate": 0,
+    "minimumLedgerIntegrityRate": 1,
+    "passed": true
+  }
+}

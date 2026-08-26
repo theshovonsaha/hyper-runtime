@@ -1,0 +1,212 @@
+{
+  "benchmark": "hyper-live-coding-smoke",
+  "version": "1.0.0",
+  "evidenceClass": "live_model",
+  "claimBoundary": "Credentialed smoke evidence for one synthetic repository task; not a general coding-quality estimate.",
+  "generatedAt": "2026-08-26T01:43:16.435Z",
+  "providers": [
+    "mistral"
+  ],
+  "trials": [
+    {
+      "provider": "mistral",
+      "model": "mistral-small-2603",
+      "status": "completed",
+      "latencyMs": 4167.842500000001,
+      "cancellationLatencyMs": 0.5750840000000608,
+      "cancellationSucceeded": true,
+      "modelCalls": 6,
+      "actionCount": 5,
+      "inputTokens": 9939,
+      "outputTokens": 281,
+      "cachedInputTokens": 7568,
+      "reasoningTokens": 0,
+      "costObserved": false,
+      "proposalFailureCount": 0,
+      "proposalRejectionCount": 0,
+      "proposalFailureReasons": [],
+      "proposalRejectionReasons": [],
+      "modelPassTrace": [
+        {
+          "step": 1,
+          "purpose": "tool_selection",
+          "proposalKind": "action",
+          "inputTokens": 1090,
+          "outputTokens": 34,
+          "cachedInputTokens": 80,
+          "reasoningTokens": 0,
+          "latencyMs": 698.658917,
+          "estimatedTokens": 1101,
+          "tokenEstimateError": 11
+        },
+        {
+          "step": 2,
+          "purpose": "diagnosis",
+          "proposalKind": "action",
+          "inputTokens": 1182,
+          "outputTokens": 31,
+          "cachedInputTokens": 1072,
+          "reasoningTokens": 0,
+          "latencyMs": 660.19775,
+          "estimatedTokens": 1337,
+          "tokenEstimateError": 155
+        },
+        {
+          "step": 3,
+          "purpose": "tool_selection",
+          "proposalKind": "action",
+          "inputTokens": 1436,
+          "outputTokens": 20,
+          "cachedInputTokens": 1152,
+          "reasoningTokens": 0,
+          "latencyMs": 519.3302079999999,
+          "estimatedTokens": 1686,
+          "tokenEstimateError": 250
+        },
+        {
+          "step": 4,
+          "purpose": "tool_selection",
+          "proposalKind": "action",
+          "inputTokens": 1748,
+          "outputTokens": 149,
+          "cachedInputTokens": 1408,
+          "reasoningTokens": 0,
+          "latencyMs": 1158.7134580000002,
+          "estimatedTokens": 2037,
+          "tokenEstimateError": 289
+        },
+        {
+          "step": 5,
+          "purpose": "tool_selection",
+          "proposalKind": "action",
+          "inputTokens": 2146,
+          "outputTokens": 43,
+          "cachedInputTokens": 1728,
+          "reasoningTokens": 0,
+          "latencyMs": 710.5204589999998,
+          "estimatedTokens": 2428,
+          "tokenEstimateError": 282
+        },
+        {
+          "step": 6,
+          "purpose": "completion",
+          "proposalKind": "complete",
+          "inputTokens": 2337,
+          "outputTokens": 4,
+          "cachedInputTokens": 2128,
+          "reasoningTokens": 0,
+          "latencyMs": 349.6894589999997,
+          "estimatedTokens": 2742,
+          "tokenEstimateError": 405
+        }
+      ],
+      "actionTrace": [
+        {
+          "capabilityId": "workspace.repository.search",
+          "success": false,
+          "summary": "Repository search target must be a directory.",
+          "errorCode": "REPOSITORY_SEARCH_FAILED",
+          "effectState": "unknown",
+          "observed": false
+        },
+        {
+          "capabilityId": "workspace.repository.search",
+          "success": true,
+          "summary": "Found 1 bounded matches across 1 files.",
+          "effectState": "applied",
+          "observed": true
+        },
+        {
+          "capabilityId": "workspace.file.read",
+          "success": true,
+          "summary": "Read workspace/lib/math.ts lines 1-2 (63 bytes).",
+          "effectState": "applied",
+          "observed": true
+        },
+        {
+          "capabilityId": "workspace.file.patch",
+          "success": true,
+          "summary": "Atomically applied 1 exact replacement(s) to workspace/lib/math.ts.",
+          "effectState": "applied",
+          "observed": true
+        },
+        {
+          "capabilityId": "workspace.process.run",
+          "success": true,
+          "summary": "Process exited with code 0.",
+          "effectState": "applied",
+          "observed": true
+        }
+      ],
+      "policyTrace": [
+        {
+          "proposalId": "proposal:85a87f837964b5e72dd93789",
+          "disposition": "allow",
+          "capabilityId": "workspace.repository.search",
+          "target": "workspace/lib/math.ts",
+          "reasonCodes": [
+            "AUTHORIZED_WITHIN_CONTRACT"
+          ]
+        },
+        {
+          "proposalId": "proposal:aae9ff1554d8ca0193240569",
+          "disposition": "allow",
+          "capabilityId": "workspace.repository.search",
+          "target": "workspace/lib",
+          "reasonCodes": [
+            "AUTHORIZED_WITHIN_CONTRACT"
+          ]
+        },
+        {
+          "proposalId": "proposal:ae4e30c3e65eb31667e30e35",
+          "disposition": "allow",
+          "capabilityId": "workspace.file.read",
+          "target": "workspace/lib/math.ts",
+          "reasonCodes": [
+            "AUTHORIZED_WITHIN_CONTRACT"
+          ]
+        },
+        {
+          "proposalId": "proposal:8b10a25c1d93c44076522215",
+          "disposition": "allow",
+          "capabilityId": "workspace.file.patch",
+          "target": "workspace/lib/math.ts",
+          "reasonCodes": [
+            "AUTHORIZED_WITHIN_CONTRACT"
+          ]
+        },
+        {
+          "proposalId": "proposal:483c06352dbb3a7c59d63f9b",
+          "disposition": "allow",
+          "capabilityId": "workspace.process.run",
+          "target": "workspace/",
+          "reasonCodes": [
+            "AUTHORIZED_WITHIN_CONTRACT"
+          ]
+        }
+      ],
+      "toolCallValidity": 1,
+      "implementationCorrect": true,
+      "testExitObserved": true,
+      "patchProvenanceObserved": true,
+      "ledgerValid": true,
+      "cancellationPassed": true,
+      "taskCompleted": true,
+      "qualityScore": 1,
+      "passed": true,
+      "reasonCodes": [
+        "COMPLETION_ORACLE_PASSED"
+      ]
+    }
+  ],
+  "metrics": {
+    "passRate": 1,
+    "taskCompletionRate": 1,
+    "toolCallValidity": 1,
+    "averageLatencyMs": 4167.842500000001,
+    "averageCancellationLatencyMs": 0.5750840000000608,
+    "totalInputTokens": 9939,
+    "totalOutputTokens": 281,
+    "costCoverageRate": 0
+  }
+}

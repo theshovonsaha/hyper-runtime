@@ -1,5 +1,6 @@
 export * from './credentials';
 export * from './filesystem';
+export * from './coding';
 export * from './http';
 export * from './knowledge';
 export * from './process';

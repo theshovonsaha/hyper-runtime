@@ -57,6 +57,19 @@ function fixture(overrides: Partial<ActionProposal<MemoryWriteArgs>> = {}) {
 }
 
 describe('deterministic authority boundary', () => {
+  test('keeps denied action coordinates beside the policy reason codes', async () => {
+    const capability = new InMemoryWorkspaceCapability();
+    const input = fixture({ target: 'private/secret.txt' });
+    const runtime = new AuthorizedRuntime();
+    await runtime.execute({ runId: 'run:denial-trace', now, ...input, capability });
+    expect(runtime.ledger.forRun('run:denial-trace').find(event => event.type === 'policy.decided')?.payload)
+      .toMatchObject({
+        proposalId: 'proposal:test', disposition: 'deny', capabilityId: 'memory.workspace.write',
+        target: 'private/secret.txt', declaredEffects: ['state.write'], risk: 1,
+        reasonCodes: expect.arrayContaining(['TARGET_OUTSIDE_SCOPE']),
+      });
+  });
+
   test('denies a reachable capability when the target is outside intent scope', () => {
     const capability = new InMemoryWorkspaceCapability();
     const input = fixture({ target: 'private/secret.txt' });

@@ -5,6 +5,7 @@ import {
   Search, Send, Server, Settings2, Sparkles, TerminalSquare, Trash2, Wrench, X,
 } from "lucide-react";
 import { BlobAvatar } from "morph-ui/react";
+import { loadChatSessions, persistChatSessions } from "../store/chatSessionStorage.js";
 
 const PHASES = ["intake", "context", "gate", "plan", "model", "tool", "verify", "respond", "commit", "done"];
 const PHASE_LABEL = { intake:"Intake", context:"Context", gate:"Approval", plan:"Planning", model:"Thinking", tool:"Using tools", verify:"Verifying", respond:"Responding", commit:"Receipt", done:"Complete", error:"Error" };
@@ -86,7 +87,6 @@ function normalizeUiEvent(event={}) {
 const initialMessages = () => [
   { id:id("msg"), role:"assistant", at:Date.now(), content:"Tell me the outcome you need. I’ll choose the approach, use the right tools, and verify the work before calling it done." },
 ];
-const SESSION_KEY = "hyper_chat_sessions_v1";
 const API_BASE_KEY = "hyper_api_base";
 const MODEL_KEY = "hyper_model";
 const PROVIDER_KEY = "hyper_provider";
@@ -137,14 +137,10 @@ function uniqueMessages(messages=[]) {
 }
 
 function storedSessions() {
-  try {
-    const parsed=JSON.parse(localStorage.getItem(SESSION_KEY) || "[]");
-    return Array.isArray(parsed) && parsed.length
-      ? parsed.map(session=>({...session,messages:uniqueMessages(session.messages)}))
-      : [freshSession()];
-  } catch {
-    return [freshSession()];
-  }
+  const parsed=loadChatSessions(localStorage);
+  return parsed.length
+    ? parsed.map(session=>({...session,messages:uniqueMessages(session.messages)}))
+    : [freshSession()];
 }
 
 export function MorphChatModal() {
@@ -162,6 +158,7 @@ export function MorphChatModal() {
   const [backendState, setBackendState] = useState("checking");
   const [backendInfo, setBackendInfo] = useState(null);
   const [backendError, setBackendError] = useState("");
+  const [storageWarning, setStorageWarning] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiBase, setApiBase] = useState(() => localStorage.getItem(API_BASE_KEY) || "");
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem(MODEL_KEY) || "");
@@ -314,10 +311,13 @@ export function MorphChatModal() {
         return next;
       });
       setBackendState("online");
-      await Promise.all([
+      const [serverSessions]=await Promise.all([
         refreshServerSessions(base),
         loadProviderModels(chosen,base,provider?.default_model || config.model || ""),
       ]);
+      const activeId=activeSessionId||initialSession.id;
+      const active=serverSessions.find(item=>item.id===activeId||item.backendSessionId===initialSession.backendSessionId);
+      if(active)await openSession(active,{backendOnline:true,base});
     } catch (error) {
       setBackendInfo(null);
       setBackendError(error instanceof Error && error.message ? error.message : "Runtime is not reachable");
@@ -352,7 +352,7 @@ export function MorphChatModal() {
   useEffect(() => {
     setSessions(items=>items.map(item=>item.id===activeSessionId ? {
       ...item,
-      title:messages.find(message=>message.role==="user")?.content.slice(0,42) || "New chat",
+      title:messages.find(message=>message.role==="user")?.content.slice(0,42) || item.title || "New chat",
       backendSessionId:sessionId,
       messages,
       runs:pastRuns,
@@ -361,7 +361,10 @@ export function MorphChatModal() {
   }, [activeSessionId, messages, pastRuns, sessionId]);
 
   useEffect(() => {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
+    const result=persistChatSessions(localStorage,sessions);
+    setStorageWarning(result.persisted
+      ? result.recoveredFromQuota ? "Browser cache repaired · full history remains in the runtime" : ""
+      : "Browser storage is full · this chat remains available until reload");
   }, [sessions]);
 
   useEffect(() => {
@@ -392,30 +395,28 @@ export function MorphChatModal() {
   async function refreshServerSessions(base=apiBase) {
     try {
       const response=await fetch(apiUrl("/api/sessions", base));
-      if (!response.ok) return;
+      if (!response.ok) return [];
       const data=await response.json();
+      const summaries=(data.sessions||[]).map(server=>({
+        id:server.id,backendSessionId:server.id,title:server.title,agent:server.agent,
+        messages:[],runs:[],updatedAt:Date.parse(server.updatedAt),
+      }));
       setSessions(current=>{
-        const serverSessions=(data.sessions||[]).map(server=>{
+        const serverSessions=summaries.map(server=>{
           const existing=current.find(item=>item.backendSessionId===server.id||item.id===server.id);
-          return existing ? { ...existing, backendSessionId:server.id, title:server.title, agent:server.agent, updatedAt:Date.parse(server.updatedAt) } : {
-            id:server.id,
-            backendSessionId:server.id,
-            title:server.title,
-            agent:server.agent,
-            messages:[],
-            runs:[],
-            updatedAt:Date.parse(server.updatedAt),
-          };
+          return existing ? { ...existing, ...server, messages:existing.messages||[], runs:existing.runs||[] } : server;
         });
         const deviceOnly=current.filter(item=>!item.backendSessionId&&!serverSessions.some(server=>server.id===item.id));
         return [...serverSessions,...deviceOnly];
       });
+      return summaries;
     } catch {
       // Device-local sessions remain available while the runtime is offline.
+      return [];
     }
   }
 
-  async function openSession(next) {
+  async function openSession(next,options={}) {
     if (working) return;
     setActiveSessionId(next.id);
     localStorage.setItem("hyper_active_chat", next.id);
@@ -450,12 +451,13 @@ export function MorphChatModal() {
     }
     setShape("chat");
     const backendId=next.backendSessionId || (next.id.startsWith("session:") ? next.id : null);
-    if (!backendId || backendState !== "online") return;
+    if (!backendId || backendState !== "online"&&!options.backendOnline) return;
+    const requestBase=options.base??apiBase;
     try {
       const [messageResponse,runResponse,fileResponse]=await Promise.all([
-        fetch(apiUrl(`/api/sessions/${encodeURIComponent(backendId)}/messages`)),
-        fetch(apiUrl(`/api/runs?session_id=${encodeURIComponent(backendId)}`)),
-        fetch(apiUrl(`/api/sessions/${encodeURIComponent(backendId)}/files`)),
+        fetch(apiUrl(`/api/sessions/${encodeURIComponent(backendId)}/messages`,requestBase)),
+        fetch(apiUrl(`/api/runs?session_id=${encodeURIComponent(backendId)}`,requestBase)),
+        fetch(apiUrl(`/api/sessions/${encodeURIComponent(backendId)}/files`,requestBase)),
       ]);
       if (!messageResponse.ok || !runResponse.ok) return;
       const serverMessages=((await messageResponse.json()).messages || []).map(message=>({
@@ -466,7 +468,7 @@ export function MorphChatModal() {
       if(fileResponse.ok){const fileData=await fileResponse.json();setAttachments(fileData.files||[]);setArtifacts(fileData.artifacts||[]);setEmbeddingState(fileData.embedding||{profile_id:"lexical",profiles:[],locked_at:null});}
       const hydrated=await Promise.all(serverRuns.slice(0,12).map(async item=>{
         try {
-          const response=await fetch(apiUrl(`/api/runs/${encodeURIComponent(item.id)}/trail`));
+          const response=await fetch(apiUrl(`/api/runs/${encodeURIComponent(item.id)}/trail`,requestBase));
           const data=response.ok ? await response.json() : { events:[] };
           return { id:item.id,backendId:item.id,source:"runtime",prompt:item.objective,status:item.status,startedAt:Date.parse(item.startedAt),endedAt:item.endedAt?Date.parse(item.endedAt):undefined,trailSummary:data.summary,trailIntegrity:data.integrity,events:(data.events||[]).map(normalizeUiEvent) };
         } catch { return { id:item.id,backendId:item.id,source:"runtime",prompt:item.objective,status:item.status,startedAt:Date.parse(item.startedAt),events:[] }; }
@@ -795,7 +797,8 @@ export function MorphChatModal() {
         <div className="mcm-session-head"><div><small>Workspace</small><strong>Chats</strong></div><button onClick={newChat} disabled={working} title="New chat"><Plus size={15}/></button></div>
         <button className="mcm-new-chat" onClick={newChat} disabled={working}><Plus size={14}/>New chat</button>
         <nav className="mcm-library-nav" aria-label="Operator workspace"><button onClick={()=>setOperatorPanel("files")}><FolderOpen size={12}/>Files</button><button onClick={()=>setOperatorPanel("runs")}><Layers3 size={12}/>Library</button></nav>
-        <div className="mcm-session-list">{[...sessions].sort((a,b)=>b.updatedAt-a.updatedAt).map(item=><div key={item.id} className={item.id===activeSessionId?"active":""}><button onClick={()=>openSession(item)}><MessageSquare size={13}/><span><strong>{item.title}</strong><small>{item.runs?.length || 0} runs</small></span></button><button className="delete" onClick={()=>void deleteChat(item)} title="Delete chat" aria-label={`Delete ${item.title}`}><Trash2 size={12}/></button></div>)}</div>
+        <div className="mcm-session-list">{[...sessions].sort((a,b)=>b.updatedAt-a.updatedAt).map(item=><div key={item.id} className={item.id===activeSessionId?"active":""}><button onClick={()=>openSession(item)}><MessageSquare size={13}/><span><strong>{item.title}</strong><small>{item.runs?.length || item.runCount || 0} runs</small></span></button><button className="delete" onClick={()=>void deleteChat(item)} title="Delete chat" aria-label={`Delete ${item.title}`}><Trash2 size={12}/></button></div>)}</div>
+        {storageWarning&&<div className="mcm-storage-warning" role="status">{storageWarning}</div>}
         <div className={`mcm-connection-card ${backendState}`}><span className={`mcm-backend-dot ${backendState}`}/><div><strong>{backendState === "online" ? "Backend connected" : backendState === "checking" ? "Connecting…" : "Backend offline"}</strong><small>{backendState === "online" ? `${selectedProvider || backendInfo?.provider} · ${selectedModel || backendInfo?.model}` : backendError || "Start with bun run dev"}</small></div><button onClick={()=>void connectBackend()} title="Reconnect"><RotateCw size={13}/></button></div>
       </aside>
       <section className={`mcm-shell shape-${shape} ${working ? "is-working" : "is-idle"}`} style={{ "--mcm-phase":PHASE_COLOR[currentView.phase] || PHASE_COLOR.model }}>
@@ -899,18 +902,21 @@ function FilePreview({preview,contentUrl}){if(["code","markdown","json","csv","t
 
 function OperatorPanel({panel,onPanelChange,apiBase,sessionId,sessionAgentEnabled,profiles,providers,selectedProvider,selectedModel,modelOptions,allowedHosts,onResume,onClose}) {
   const [data,setData]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState(""),[selected,setSelected]=useState(null);
+  const [pendingAction,setPendingAction]=useState("");
   const [scheduleProvider,setScheduleProvider]=useState(selectedProvider),[scheduleModel,setScheduleModel]=useState(selectedModel),[scheduleModels,setScheduleModels]=useState(modelOptions);
   const endpoint={runs:"/api/runs",memory:`/api/memory?session_id=${encodeURIComponent(sessionId||"session:none")}`,tools:"/api/custom_tools",schedules:"/api/schedules",scorecard:"/api/scorecard",signals:"/api/signals",corrections:"/api/corrections"}[panel];
   const endpointUrl=path=>`${apiBase.replace(/\/$/,"")}${path}`;
-  async function refresh(){setLoading(true);setError("");try{const response=await fetch(endpointUrl(endpoint));if(!response.ok)throw new Error(`runtime returned ${response.status}`);setData(await response.json());}catch(reason){setError(reason.message||"Could not load this view");}finally{setLoading(false);}}
+  const recordsFor=value=>panel==="runs"?value?.runs:panel==="memory"?value?.memory:panel==="tools"?value?.custom_tools:panel==="schedules"?value?.schedules:panel==="signals"?value?.runs:panel==="corrections"?value?.corrections:null;
+  async function refresh(){setLoading(true);setError("");try{const response=await fetch(endpointUrl(endpoint));if(!response.ok)throw new Error(`runtime returned ${response.status}`);const value=await response.json();setData(value);setSelected(current=>current?(recordsFor(value)||[]).find(item=>item.id===current.id)||null:null);}catch(reason){setError(reason.message||"Could not load this view");}finally{setLoading(false);}}
   useEffect(()=>{let active=true;setLoading(true);setError("");fetch(`${apiBase.replace(/\/$/,"")}${endpoint}`).then(async response=>{if(!response.ok)throw new Error(`runtime returned ${response.status}`);const value=await response.json();if(active)setData(value);}).catch(reason=>{if(active)setError(reason.message||"Could not load this view");}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[apiBase,endpoint]);
   useEffect(()=>{if(panel!=="schedules"||!scheduleProvider)return;let active=true;fetch(`${apiBase.replace(/\/$/,"")}/api/models/${encodeURIComponent(scheduleProvider)}`).then(async response=>{const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(value.error||`model discovery returned ${response.status}`);if(!active)return;const models=(value.models||[]).filter(item=>item?.id);setScheduleModels(models);setScheduleModel(current=>models.some(item=>item.id===current)?current:value.default_model||models[0]?.id||current);}).catch(reason=>{if(active)setError(reason.message||"Could not discover schedule models");});return()=>{active=false;};},[apiBase,panel,scheduleProvider]);
   async function mutate(path,options={}){const response=await fetch(endpointUrl(path),options);if(!response.ok){const value=await response.json().catch(()=>({}));throw new Error(value.error||`runtime returned ${response.status}`);}if(response.headers.get("content-type")?.includes("text/event-stream"))await response.text();await refresh();}
+  async function runMutation(path,options={}){if(pendingAction)return;setPendingAction(path);setError("");try{await mutate(path,options);}catch(reason){setError(reason.message||"The runtime action failed");}finally{setPendingAction("");}}
   async function addTool(event){event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));try{await mutate("/api/custom_tools",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:values.name,description:values.description,host:values.host,path_prefix:values.pathPrefix})});event.currentTarget.reset();}catch(reason){setError(reason.message);}}
   async function addSchedule(event){event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));try{await mutate("/api/schedules",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:values.prompt,profile:values.profile,provider:scheduleProvider,model:scheduleModel,interval_minutes:Number(values.intervalMinutes),...(sessionAgentEnabled&&sessionId?{session_id:sessionId}:{})})});event.currentTarget.reset();}catch(reason){setError(reason.message);}}
   async function addCorrection(event){event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));try{await mutate("/api/corrections",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({observed:values.observed,mismatch:values.mismatch,correction:values.correction,reusable_rule:values.reusableRule,trigger_codes:String(values.triggerCodes||"").split(",").map(value=>value.trim()).filter(Boolean)})});event.currentTarget.reset();}catch(reason){setError(reason.message);}}
-  const items=panel==="runs"?data?.runs:panel==="memory"?data?.memory:panel==="tools"?data?.custom_tools:panel==="schedules"?data?.schedules:panel==="signals"?data?.runs:panel==="corrections"?data?.corrections:null;
-  return <div className="mcm-operator-overlay" role="dialog" aria-modal="true" aria-label={`${panel} view`}><section className="mcm-operator-panel"><header><div><small>Operator library</small><strong>{panel}</strong></div><nav>{["runs","memory","tools","schedules","signals","corrections"].map(value=><button key={value} className={value===panel?"active":""} onClick={()=>onPanelChange(value)}>{value}</button>)}</nav><button onClick={onClose}><X size={15}/></button></header>{error&&<p className="mcm-panel-error">{error}</p>}{panel==="tools"&&<form className="mcm-inline-form" onSubmit={addTool}><input name="name" placeholder="tool_name" required/><input name="description" placeholder="What this GET tool returns" required/><input name="host" list="mcm-hosts" placeholder="allowlisted host" required/><datalist id="mcm-hosts">{allowedHosts.map(value=><option key={value} value={String(value).replace(/^https?:\/\//,"").split("/")[0]}/>)}</datalist><input name="pathPrefix" placeholder="/api/" defaultValue="/"/><button>Add bounded tool</button></form>}{panel==="schedules"&&<form className="mcm-inline-form schedule" onSubmit={addSchedule}><input name="prompt" placeholder="Task to run" required/><select name="profile">{profiles.map(value=><option key={value}>{value}</option>)}</select><select aria-label="Schedule provider" value={scheduleProvider} onChange={event=>{setScheduleProvider(event.target.value);setScheduleModel("");setScheduleModels([]);}}>{providers.filter(item=>item.configured).map(item=><option key={item.id} value={item.id}>{item.label||item.id}</option>)}</select><select aria-label="Schedule model" value={scheduleModel} onChange={event=>setScheduleModel(event.target.value)}><option value="">Select model</option>{scheduleModels.map(item=><option key={item.id} value={item.id}>{item.name||item.id}</option>)}</select><input name="intervalMinutes" type="number" min="1" defaultValue="60"/><button disabled={!scheduleProvider||!scheduleModel} title={sessionAgentEnabled?"Runs inside this session agent with its isolated history and memory":"Enable this chat as a reusable agent in Settings to link its schedules"}>{sessionAgentEnabled?"Schedule agent":"Add schedule"}</button></form>}{panel==="corrections"&&<form className="mcm-inline-form correction" onSubmit={addCorrection}><input name="observed" placeholder="Observed result" required/><input name="mismatch" placeholder="Mismatch with intent" required/><input name="correction" placeholder="Correction that worked" required/><input name="reusableRule" placeholder="Candidate reusable rule" required/><input name="triggerCodes" placeholder="Trigger codes, comma separated"/><button>Queue candidate</button></form>}<main>{loading?<EmptyState icon={Loader2} text="Loading runtime projection…"/>:panel==="scorecard"?<div className="mcm-score-grid">{Object.entries(data||{}).map(([key,value])=><Insight key={key} value={typeof value==="number"&&value>0&&value<1?`${Math.round(value*100)}%`:String(value)} label={key.replaceAll("_"," ")}/>)}</div>:<>{panel==="signals"&&<div className="mcm-score-grid compact">{Object.entries(data?.aggregate||{}).map(([key,value])=><Insight key={key} value={String(value)} label={key.replaceAll("_"," ")}/>)}</div>}<div className="mcm-record-layout"><div className="mcm-record-list">{items?.length?items.map(item=><button key={item.id} className={selected?.id===item.id?"active":""} onClick={()=>setSelected(item)}><span><strong>{item.title||item.name||item.prompt||item.content?.slice(0,70)||item.mismatch||item.id}</strong><small>{item.status||item.lastStatus||item.profile||item.host||"verified record"}</small></span><ChevronRight size={13}/></button>):<EmptyState icon={Database} text={`No ${panel} records yet.`}/>}</div><div className="mcm-record-detail">{selected?<><NaturalObject value={selected}/><div className="mcm-record-actions">{panel==="runs"&&selected.status==="interrupted"&&<button onClick={()=>onResume(selected)}>Resume from checkpoint</button>}{panel==="memory"&&<button onClick={()=>void mutate(`/api/memory/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete memory</button>}{panel==="tools"&&<><button onClick={()=>void mutate(`/api/custom_tools/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!selected.enabled})})}>{selected.enabled?"Disable":"Enable"}</button><button onClick={()=>void mutate(`/api/custom_tools/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete</button></>}{panel==="schedules"&&<><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}/run`,{method:"POST"})}>Run now</button><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!selected.enabled})})}>{selected.enabled?"Pause":"Enable"}</button><button onClick={()=>void mutate(`/api/schedules/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete</button></>}{panel==="corrections"&&selected.status==="candidate"&&<><button onClick={()=>void mutate(`/api/corrections/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({status:"accepted_for_experiment"})})}>Accept for experiment</button><button onClick={()=>void mutate(`/api/corrections/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({status:"rejected"})})}>Reject</button></>}</div></>:<EmptyState icon={Search} text="Select a record to inspect its provenance and state."/>}</div></div></>}</main></section></div>;
+  const items=recordsFor(data);
+  return <div className="mcm-operator-overlay" role="dialog" aria-modal="true" aria-label={`${panel} view`}><section className="mcm-operator-panel"><header><div><small>Operator library</small><strong>{panel}</strong></div><nav>{["runs","memory","tools","schedules","signals","corrections"].map(value=><button key={value} className={value===panel?"active":""} onClick={()=>onPanelChange(value)}>{value}</button>)}</nav><button onClick={onClose}><X size={15}/></button></header>{error&&<p className="mcm-panel-error">{error}</p>}{panel==="tools"&&<form className="mcm-inline-form" onSubmit={addTool}><input name="name" placeholder="tool_name" required/><input name="description" placeholder="What this GET tool returns" required/><input name="host" list="mcm-hosts" placeholder="allowlisted host" required/><datalist id="mcm-hosts">{allowedHosts.map(value=><option key={value} value={String(value).replace(/^https?:\/\//,"").split("/")[0]}/>)}</datalist><input name="pathPrefix" placeholder="/api/" defaultValue="/"/><button>Add bounded tool</button></form>}{panel==="schedules"&&<form className="mcm-inline-form schedule" onSubmit={addSchedule}><input name="prompt" placeholder="Task to run" required/><select name="profile">{profiles.map(value=><option key={value}>{value}</option>)}</select><select aria-label="Schedule provider" value={scheduleProvider} onChange={event=>{setScheduleProvider(event.target.value);setScheduleModel("");setScheduleModels([]);}}>{providers.filter(item=>item.configured).map(item=><option key={item.id} value={item.id}>{item.label||item.id}</option>)}</select><select aria-label="Schedule model" value={scheduleModel} onChange={event=>setScheduleModel(event.target.value)}><option value="">Select model</option>{scheduleModels.map(item=><option key={item.id} value={item.id}>{item.name||item.id}</option>)}</select><input name="intervalMinutes" type="number" min="1" defaultValue="60"/><button disabled={!scheduleProvider||!scheduleModel} title={sessionAgentEnabled?"Runs inside this session agent with its isolated history and memory":"Enable this chat as a reusable agent in Settings to link its schedules"}>{sessionAgentEnabled?"Schedule agent":"Add schedule"}</button></form>}{panel==="corrections"&&<form className="mcm-inline-form correction" onSubmit={addCorrection}><input name="observed" placeholder="Observed result" required/><input name="mismatch" placeholder="Mismatch with intent" required/><input name="correction" placeholder="Correction that worked" required/><input name="reusableRule" placeholder="Candidate reusable rule" required/><input name="triggerCodes" placeholder="Trigger codes, comma separated"/><button>Queue candidate</button></form>}<main>{loading?<EmptyState icon={Loader2} text="Loading runtime projection…"/>:panel==="scorecard"?<div className="mcm-score-grid">{Object.entries(data||{}).map(([key,value])=><Insight key={key} value={typeof value==="number"&&value>0&&value<1?`${Math.round(value*100)}%`:String(value)} label={key.replaceAll("_"," ")}/>)}</div>:<>{panel==="signals"&&<div className="mcm-score-grid compact">{Object.entries(data?.aggregate||{}).map(([key,value])=><Insight key={key} value={String(value)} label={key.replaceAll("_"," ")}/>)}</div>}<div className="mcm-record-layout"><div className="mcm-record-list">{items?.length?items.map(item=><button key={item.id} className={selected?.id===item.id?"active":""} onClick={()=>setSelected(item)}><span><strong>{item.title||item.name||item.prompt||item.content?.slice(0,70)||item.mismatch||item.id}</strong><small>{item.status||item.lastStatus||item.profile||item.host||"verified record"}</small></span><ChevronRight size={13}/></button>):<EmptyState icon={Database} text={`No ${panel} records yet.`}/>}</div><div className="mcm-record-detail">{selected?<><NaturalObject value={selected}/><div className="mcm-record-actions">{panel==="runs"&&selected.status==="interrupted"&&<button onClick={()=>onResume(selected)}>Resume from checkpoint</button>}{panel==="memory"&&<button disabled={!!pendingAction} onClick={()=>void runMutation(`/api/memory/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>{pendingAction?"Deleting…":"Delete memory"}</button>}{panel==="tools"&&<><button disabled={!!pendingAction} onClick={()=>void runMutation(`/api/custom_tools/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!selected.enabled})})}>{selected.enabled?"Disable":"Enable"}</button><button disabled={!!pendingAction} onClick={()=>void runMutation(`/api/custom_tools/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete</button></>}{panel==="schedules"&&<><button disabled={!!pendingAction} onClick={()=>void runMutation(`/api/schedules/${encodeURIComponent(selected.id)}/run`,{method:"POST"})}>Run now</button><button disabled={!!pendingAction} onClick={()=>void runMutation(`/api/schedules/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:!selected.enabled})})}>{selected.enabled?"Pause":"Enable"}</button><button disabled={!!pendingAction} onClick={()=>void runMutation(`/api/schedules/${encodeURIComponent(selected.id)}`,{method:"DELETE"})}>Delete</button></>}{panel==="corrections"&&selected.status==="candidate"&&<><button disabled={!!pendingAction} onClick={()=>void runMutation(`/api/corrections/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({status:"accepted_for_experiment"})})}>Accept for experiment</button><button disabled={!!pendingAction} onClick={()=>void runMutation(`/api/corrections/${encodeURIComponent(selected.id)}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({status:"rejected"})})}>Reject</button></>}</div></>:<EmptyState icon={Search} text="Select a record to inspect its provenance and state."/>}</div></div></>}</main></section></div>;
 }
 
 function AgentCapsule({ view, elapsed, phaseIndex, events, tools, onOpen, onStop }) {

@@ -20,6 +20,14 @@ export interface SessionHistoryCompaction {
   omittedCount: number;
 }
 
+export interface SessionContinuityProjection extends SessionHistoryCompaction {
+  mode: 'standard' | 'reference' | 'exact_operator_history';
+  currentDirection: string;
+  corrections: string;
+  transcript: string;
+  context: string;
+}
+
 /** Deterministic, provenance-preserving projection. The source messages remain
  * canonical and the projection can be rebuilt or audited by digest. */
 export function compactSessionMessages(
@@ -38,7 +46,7 @@ export function compactSessionMessages(
   const entries = omitted.map(message =>
     `${message.role === 'user' ? 'Operator' : 'Assistant'}: ${message.content.replace(/\s+/g, ' ').trim().slice(0, 280)}`,
   );
-  let summary = entries.join('\n');
+  let summary = maxSummaryCharacters > 0 ? entries.join('\n') : '';
   if (summary.length > maxSummaryCharacters) {
     const head = summary.slice(0, Math.floor(maxSummaryCharacters / 2));
     const tail = summary.slice(-Math.floor(maxSummaryCharacters / 2));
@@ -52,6 +60,54 @@ export function compactSessionMessages(
     digest: createHash('sha256').update(JSON.stringify(omitted)).digest('hex'),
     omittedCount: omitted.length,
   };
+}
+
+/** Builds one bounded continuity view for conversation, planning, and final
+ * response. Recent turns stay chronological; the latest operator direction
+ * and corrections are labeled so a model does not treat all history equally. */
+export function projectSessionContinuity(
+  messages: OperatorMessage[],
+  mode: SessionContinuityProjection['mode'] = 'standard',
+): SessionContinuityProjection {
+  const exact = mode === 'exact_operator_history';
+  const candidates = exact ? messages.filter(message => message.role === 'user') : messages;
+  const compacted = compactSessionMessages(
+    candidates,
+    exact ? 80 : mode === 'reference' ? 20 : 10,
+    exact ? 20_000 : mode === 'reference' ? 12_000 : 8_000,
+    mode === 'reference' ? 4_000 : 0,
+  );
+  if (mode !== 'reference') compacted.summary = '';
+  const operatorMessages = messages.filter(message => message.role === 'user');
+  const currentDirection = operatorMessages.slice(-4).map((message, index) =>
+    `${index + 1}. ${message.content.replace(/\s+/g, ' ').trim().slice(0, 1_000)}`,
+  ).join('\n');
+  const correctionMessages = operatorMessages.filter(message =>
+    /^(?:no\b|actually\b|correction\b|i mean\b|not that\b|instead\b)|\b(?:do not|don't|stop|focus on|rather than|ignore the previous)\b/i.test(message.content.trim()),
+  ).slice(-4);
+  const corrections = correctionMessages.map(message =>
+    `- ${message.content.replace(/\s+/g, ' ').trim().slice(0, 1_000)}`,
+  ).join('\n');
+  const transcript = compacted.retained.map(message =>
+    `${message.role === 'user' ? 'Operator' : 'Assistant'}: ${message.content}`,
+  ).join('\n\n');
+  const stable = [
+    currentDirection && `Active operator direction (chronological; later items refine earlier ones):\n${currentDirection}`,
+    corrections && `Operator corrections and boundaries (these override conflicting earlier conversation):\n${corrections}`,
+  ].filter(Boolean).join('\n\n');
+  const supporting = [
+    compacted.summary && `Earlier conversation projection (rebuildable, not a new instruction):\n${compacted.summary}`,
+    transcript && `${exact ? 'Exact operator messages' : 'Recent exchange'} (chronological):\n${transcript}`,
+  ].filter(Boolean).join('\n\n');
+  const contextBudget = exact ? 14_000 : mode === 'reference' ? 12_000 : 10_000;
+  const remaining = Math.max(0, contextBudget - stable.length - (stable ? 2 : 0));
+  const boundedSupporting = remaining === 0 ? '' : supporting.length <= remaining ? supporting : remaining < 120 ? supporting.slice(-remaining) : [
+    supporting.slice(0, Math.floor((remaining - 80) / 2)),
+    `\n… continuity projection bounded from ${supporting.length} characters …\n`,
+    supporting.slice(-Math.floor((remaining - 80) / 2)),
+  ].join('');
+  const context = [stable, boundedSupporting].filter(Boolean).join('\n\n');
+  return { ...compacted, mode, currentDirection, corrections, transcript, context };
 }
 
 export interface OperatorSession {

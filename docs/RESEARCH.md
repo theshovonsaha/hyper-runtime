@@ -300,6 +300,20 @@ Gemini, Groq, NVIDIA, DeepSeek, Mistral, and OpenCode routes. It records
 errors, and whether actions stayed inside supplied authority. Its results must
 not be conflated with deterministic fixture evidence.
 
+`bun run eval:live:coding` is a stricter, explicitly opted-in experiment. For
+each selected route it creates a fresh defective TypeScript workspace and runs
+the public `search -> read -> patch -> process -> completion` loop. Its grader
+requires the corrected file contents, patch digest provenance, a zero process
+exit containing the fixture marker, ledger integrity, valid proposals, and an
+already-cancelled request rejected within two seconds. It also records total
+latency, provider-observed input/output/cache/reasoning tokens, and cost when
+the configured model profile supplies prices. The default provider ceiling is
+two and the fixture is synthetic, so this is smoke evidence rather than an
+estimate of repository-level coding ability.
+The receipt includes a per-pass inference trace rather than totals alone, which
+allows cache behavior and context-estimate drift to be compared at the exact
+tool-selection, diagnosis, or completion call where they occur.
+
 ## Runtime scenario lab and specialized benchmark
 
 `evals/runtime-lab.v1.json` predeclares ten terminal outcomes and their required
@@ -429,6 +443,36 @@ therefore evaluate its chat router and coding harness jointly: clarification
 quality, task resolution, patch correctness, cost, context resets, operator
 interventions, and artifact handoff must all be reported.
 
+### Stateful simulated inference benchmark
+
+`evals/agent-simulation.v1.json` freezes 18 stories covering 10 execution
+archetypes: ordinary conversation, coding inspect/edit/test, research,
+session retrieval, native multi-tool calls, bounded recovery, provider
+fallback, clarification and approval gates, cancellation, and adversarial
+proposals. The runner uses stateful deterministic model doubles, but those
+doubles cross the public `ModelDriver`, `WorkflowRunner`, policy, capability,
+observation, verification, and hash-chain boundaries. Later passes receive the
+same provider-neutral assistant calls and verified tool-result messages used by
+live transports.
+
+The pre-registered gates are:
+
+- at least 90% coverage of the ten declared archetype categories;
+- 100% scenario expectation accuracy;
+- 100% assistant-tool-call/result continuity;
+- 100% expected recovery success;
+- 100% structurally grounded final answers for completed stories;
+- zero false completion and unauthorized execution;
+- 100% ledger integrity; and
+- a per-story ceiling on simulated model calls.
+
+“90%” refers only to the declared archetype matrix. It is not a claim that the
+suite represents 90% of production traffic, repositories, users, or model
+behavior. The evidence mode is `simulated_inference`, distinct from both
+zero-model-call fixtures and credentialed live-provider evidence. Simulated
+success can establish integration and regression resistance, not semantic
+answer quality, general coding ability, or external-service reliability.
+
 ### Converged runtime shape
 
 ```text
@@ -447,3 +491,33 @@ user turn
 This separation preserves ordinary chat while keeping the research invariant
 that a model proposal is never authority and an effect is never called complete
 from prose alone.
+
+### Paired live causal ablation and experience projection
+
+`bun run eval:live:paired` is a credentialed, explicitly enabled experiment.
+For each frozen task it requests a full-context proposal and a bounded
+phase-selected-context proposal from the same provider/model. The selected
+proposal must contain the exact capability, target, and value before it is
+replayed unchanged across three runtime conditions:
+
+1. reachability treated as authority;
+2. authorization with the execution result trusted; and
+3. authorization plus independent observed-state verification.
+
+The task set includes a valid effect, an adapter that reports success without
+changing state, a capability outside the intent, and an expired condition.
+Metrics cover proposal recall, provider-reported input tokens, decision
+accuracy, unauthorized execution, false completion, legitimate completion,
+and ledger integrity. The generated report identifies itself as bounded
+`live_model` evidence and expressly excludes population, security-certification,
+and novelty claims. Multiple providers and repeats improve measurement but do
+not remove selection bias or establish general capability.
+
+`projectExperienceTrajectory` rebuilds a compact training/evaluation record
+only from canonical events. It contains the objective, selected context IDs,
+action and policy outcomes, observations, verification, recovery, terminal
+receipt, provider usage, and source event hashes. It declares
+`authority: evidence_only` and `containsHiddenReasoning: false`; it neither
+stores private chain-of-thought nor becomes permission to execute. JSONL
+datasets can therefore be regenerated after projection changes instead of
+silently becoming a second source of truth.

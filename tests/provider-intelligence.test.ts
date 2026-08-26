@@ -13,6 +13,163 @@ import {
 } from '@hyper/cli';
 
 describe('provider intelligence and resource control', () => {
+  test('converts one native provider tool call into a canonical proposal without model-authored runtime bookkeeping', async () => {
+    let request: Parameters<NonNullable<ConstructorParameters<typeof CanonicalModelDriver>[0]['generate']>>[0] | undefined;
+    const driver = new CanonicalModelDriver({
+      id: 'native-fixture', model: 'local-tool-model', supportsNativeTools: true,
+      async generate(input) {
+        request = input;
+        return {
+          text: '',
+          toolCalls: [{
+            id: 'call-1',
+            name: 'hyper_1_network_web_search',
+            arguments: { query: 'Canada budget pressures' },
+          }],
+          usage: { inputTokens: 90, outputTokens: 12 },
+        };
+      },
+    });
+    const packet = new DynamicContextCompiler().compile({
+      runId: 'run:native', phase: 'orient', objective: 'Search the web.', constraints: [],
+      strategyId: 'strategy:native', focusTags: [], sources: [], tokenBudget: 500,
+      now: '2026-08-24T12:00:00.000Z',
+    });
+    const result = await driver.propose(packet, [{
+      id: 'network.web.search', version: '0.2.0', description: 'Search the public web.',
+      effects: ['network.request', 'state.read'], requiredEffects: ['network.request'],
+      targetPatterns: ['search://web'], riskCeiling: 3, approval: 'risk_based',
+      idempotent: true, verification: 'required',
+      inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' } }, additionalProperties: false },
+    }], {
+      intentId: 'intent:native', principalId: 'agent:native',
+      authorizedCapabilityIds: ['network.web.search'], requiredConditionIds: ['condition:request'],
+      requiredEvidence: ['capability:network.web.search'], riskBudget: 3,
+      activeStrategyId: 'strategy:native',
+    });
+    expect(request?.tools).toHaveLength(1);
+    expect(request?.user).not.toContain('CURRENT_ACTION_CONTRACT_JSON');
+    expect(result.proposal).toMatchObject({
+      kind: 'action', strategyId: 'strategy:native',
+      action: {
+        intentId: 'intent:native', principalId: 'agent:native', conditionIds: ['condition:request'],
+        capabilityId: 'network.web.search', target: 'search://web',
+        declaredEffects: ['network.request'], risk: 2,
+        expectedEvidence: ['capability:network.web.search'],
+        args: { query: 'Canada budget pressures' },
+      },
+    });
+    expect(result.requestAudit?.toolSchemaCharacters).toBeGreaterThan(0);
+  });
+
+  test('sends and parses OpenAI-compatible native tool calls', async () => {
+    let body: Record<string, any> = {};
+    const transport = new OpenAICompatibleTransport('local-tool-model', undefined, 'http://localhost:11434/v1', async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        choices: [{
+          message: { content: null, tool_calls: [{ id: 'call-local', type: 'function', function: { name: 'clock', arguments: '{"timezone":"America/Toronto"}' } }] },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 20, completion_tokens: 5 },
+      });
+    }, 60_000, 'ollama');
+    const result = await transport.generate({
+      system: 'Choose a tool.', user: 'What time is it?', format: 'text',
+      tools: [{ name: 'clock', description: 'Read time.', inputSchema: { type: 'object' } }],
+    });
+    expect(body.tools[0]).toMatchObject({ type: 'function', function: { name: 'clock' } });
+    expect(result.toolCalls).toEqual([{
+      id: 'call-local', name: 'clock', arguments: { timezone: 'America/Toronto' },
+    }]);
+    expect(result.text).toBe('');
+  });
+
+  test('preserves OpenAI-compatible assistant calls, tool results, and DeepSeek reasoning continuation', async () => {
+    let body: Record<string, any> = {};
+    const transport = new OpenAICompatibleTransport('deepseek-model', 'secret', 'https://deepseek.test/v1', async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        choices: [{ message: { content: 'The verified result is ready.' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 40, completion_tokens: 8 },
+      });
+    }, 60_000, 'deepseek');
+    await transport.generate({
+      system: 'Use verified tool results.', user: 'unused', format: 'text',
+      messages: [{
+        id: 'user-1', role: 'user', createdAt: '2026-08-24T12:00:00.000Z',
+        content: [{ type: 'text', text: 'Inspect the file.' }],
+      }, {
+        id: 'assistant-1', role: 'assistant', createdAt: '2026-08-24T12:00:00.000Z',
+        providerState: { reasoningContent: 'I should inspect the requested file.' },
+        content: [{ type: 'tool_call', callId: 'call-1', name: 'read_file', arguments: { path: 'README.md' } }],
+      }, {
+        id: 'tool-1', role: 'tool', createdAt: '2026-08-24T12:00:00.000Z',
+        content: [{
+          type: 'tool_result', callId: 'call-1', name: 'read_file', status: 'completed',
+          summary: 'Read file.', content: '{"text":"verified"}', evidenceRefs: ['e1'], observationRefs: ['o1'],
+        }],
+      }],
+    });
+    expect(body.messages).toEqual([
+      { role: 'system', content: 'Use verified tool results.' },
+      { role: 'user', content: 'Inspect the file.' },
+      { role: 'assistant', content: null, reasoning_content: 'I should inspect the requested file.', tool_calls: [{
+        id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"README.md"}' },
+      }] },
+      { role: 'tool', tool_call_id: 'call-1', content: '{"text":"verified"}' },
+    ]);
+  });
+
+  test('sends and parses Anthropic native tool-use blocks', async () => {
+    let body: Record<string, any> = {};
+    const transport = new AnthropicMessagesTransport('claude-sonnet-4-6', 'secret', 'https://anthropic.test/v1', async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        content: [{ type: 'tool_use', id: 'toolu_1', name: 'search_web', input: { query: 'current context engineering' } }],
+        stop_reason: 'tool_use', usage: { input_tokens: 30, output_tokens: 8 },
+      });
+    });
+    const result = await transport.generate({
+      system: 'Choose a tool.', user: 'Research context engineering.',
+      tools: [{ name: 'search_web', description: 'Search the web.', inputSchema: { type: 'object' } }],
+    });
+    expect(body.tools[0]).toMatchObject({ name: 'search_web', input_schema: { type: 'object' } });
+    expect(result.toolCalls).toEqual([{
+      id: 'toolu_1', name: 'search_web', arguments: { query: 'current context engineering' },
+    }]);
+  });
+
+  test('places Anthropic tool results immediately after the matching tool use', async () => {
+    let body: Record<string, any> = {};
+    const transport = new AnthropicMessagesTransport('claude-sonnet-4-6', 'secret', 'https://anthropic.test/v1', async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn', usage: { input_tokens: 20, output_tokens: 3 } });
+    });
+    await transport.generate({
+      system: 'Use tools.', user: 'unused',
+      messages: [{ id: 'u', role: 'user', createdAt: '2026-08-24T12:00:00.000Z', content: [{ type: 'text', text: 'Read it.' }] }, {
+        id: 'a', role: 'assistant', createdAt: '2026-08-24T12:00:00.000Z',
+        providerState: { anthropicThinkingBlocks: [{ type: 'thinking', thinking: 'bounded', signature: 'sig' }] },
+        content: [{ type: 'tool_call', callId: 'toolu_1', name: 'read_file', arguments: { path: 'README.md' } }],
+      }, {
+        id: 't', role: 'tool', createdAt: '2026-08-24T12:00:00.000Z', content: [{
+          type: 'tool_result', callId: 'toolu_1', name: 'read_file', status: 'completed',
+          summary: 'Read.', content: '{"text":"ok"}', evidenceRefs: [], observationRefs: ['o1'],
+        }],
+      }],
+    });
+    expect(body.messages[1]).toMatchObject({
+      role: 'assistant', content: [
+        { type: 'thinking', thinking: 'bounded', signature: 'sig' },
+        { type: 'tool_use', id: 'toolu_1', name: 'read_file' },
+      ],
+    });
+    expect(body.messages[2]).toEqual({
+      role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '{"text":"ok"}' }],
+    });
+  });
+
   test('uses one natural-language model call for conversation without a proposal schema', async () => {
     const requests: Array<{ system: string; user: string; format?: string }> = [];
     const driver = new CanonicalModelDriver({
@@ -27,6 +184,9 @@ describe('provider intelligence and resource control', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.format).toBe('text');
     expect(requests[0]?.system).not.toContain('workflow proposal');
+    expect(requests[0]?.system).toContain('not proof that a tool');
+    expect(requests[0]?.system).toContain('no observed result');
+    expect(requests[0]?.system).toContain('no explicit memory value was supplied');
   });
 
   test('rejects a truncated conversational answer so routing can recover', async () => {
@@ -38,6 +198,22 @@ describe('provider intelligence and resource control', () => {
     });
     await expect(driver.respond({ objective: 'Explain this fully.' }))
       .rejects.toThrow('MODEL_OUTPUT_TRUNCATED:max_tokens');
+  });
+
+  test('uses task-scoped output ceilings instead of reserving the model maximum', async () => {
+    const requested: number[] = [];
+    const driver = new CanonicalModelDriver({
+      id: 'fixture', model: 'large-output-model',
+      async generate(request) {
+        requested.push(request.maxOutputTokens ?? 0);
+        return { text: 'A useful answer.', usage: { inputTokens: 8, outputTokens: 4 } };
+      },
+    }, {
+      profile: { contextWindow: 131_072, maxOutputTokens: 8_192, reasoningEfforts: ['off'] },
+    });
+    await driver.respond({ objective: 'Hello.', responseDepth: 'fast', maxOutputTokens: 768 });
+    await driver.respond({ objective: 'Explain this.', responseDepth: 'reasoned' });
+    expect(requested).toEqual([768, 2_048]);
   });
 
   test('accounts for OpenAI-compatible cache and reasoning usage and sends explicit effort', async () => {
@@ -103,6 +279,16 @@ describe('provider intelligence and resource control', () => {
     await expect(permanent.generate({ system: 'stable', user: 'dynamic' }))
       .rejects.toThrow('HTTP 400: The model ID does not exist.');
     expect(permanentAttempts).toBe(1);
+
+    const sensitive = new OpenAICompatibleTransport('bad-model', 'secret', 'https://provider.test/v1', async () =>
+      Response.json({ error: { message: 'org_01secret used sk-sensitive12345678' } }, { status: 400 }));
+    let message = '';
+    try { await sensitive.generate({ system: 'stable', user: 'dynamic' }); }
+    catch (error) { message = error instanceof Error ? error.message : String(error); }
+    expect(message).toContain('org_[redacted]');
+    expect(message).toContain('[credential-redacted]');
+    expect(message).not.toContain('org_01secret');
+    expect(message).not.toContain('sk-sensitive12345678');
   });
 
   test('accounts for Anthropic cache usage and maps supported thinking budgets', async () => {

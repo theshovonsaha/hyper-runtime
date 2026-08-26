@@ -104,7 +104,16 @@ export class AuthorizedRuntime {
       manifest: capability.manifest,
       approval: input.approval,
     });
-    this.ledger.append(runId, 'policy.decided', decision as unknown as Record<string, unknown>);
+    this.ledger.append(runId, 'policy.decided', {
+      ...(decision as unknown as Record<string, unknown>),
+      // Preserve the safe action envelope beside the decision so a denied
+      // proposal is diagnosable without reconstructing model output.
+      capabilityId: proposal.capabilityId,
+      target: proposal.target,
+      declaredEffects: proposal.declaredEffects,
+      risk: proposal.risk,
+      conditionIds: proposal.conditionIds,
+    });
 
     if (decision.disposition !== 'allow' || !decision.grant) {
       return outcomeForDecision(runId, decision, this.ledger);
@@ -200,6 +209,7 @@ export class AuthorizedRuntime {
       success: execution.success,
       summary: execution.summary,
       errorCode: execution.errorCode,
+      failureObservationAvailable: execution.failureObservationAvailable,
       evidence: execution.evidence,
       effectState: execution.effectState,
       effectId: execution.effectId,
@@ -208,11 +218,31 @@ export class AuthorizedRuntime {
     });
 
     if (!execution.success) {
+      let failureObservation;
+      if (execution.failureObservationAvailable) {
+        try {
+          failureObservation = await capability.observe(proposal);
+          this.ledger.append(runId, 'state.observed', {
+            proposalId: proposal.id,
+            capabilityId: capability.manifest.id,
+            observationPurpose: 'failure_diagnostic',
+            ...failureObservation,
+          } as unknown as Record<string, unknown>);
+        } catch (error) {
+          this.ledger.append(runId, 'state.observation_failed', {
+            proposalId: proposal.id,
+            capabilityId: capability.manifest.id,
+            observationPurpose: 'failure_diagnostic',
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       const receipt = this.ledger.append(runId, 'action.receipt', {
         status: 'execution_failed',
         decisionId: decision.id,
         executed: true,
         claimedSuccess: false,
+        failureObserved: !!failureObservation,
       });
       return {
         runId,
@@ -221,6 +251,7 @@ export class AuthorizedRuntime {
         executed: true,
         claimedSuccess: false,
         execution,
+        observation: failureObservation,
         receiptHash: receipt.hash,
       };
     }

@@ -114,6 +114,10 @@ export interface CapabilityExecution {
   summary: string;
   evidence: EvidenceRef[];
   errorCode?: string;
+  /** The adapter retained a bounded, independently observable result for a
+   * failed execution (for example a process exit code and stderr). This is a
+   * server-owned fact, not permission to treat the action as successful. */
+  failureObservationAvailable?: boolean;
   effectState?: EffectState;
   effectId?: string;
   retrySafe?: boolean;
@@ -287,6 +291,72 @@ export interface ConversationTurn {
   createdAt: string;
 }
 
+/** Provider-neutral conversation blocks. These preserve native assistant/tool
+ * continuity without making any provider's hidden state canonical authority. */
+export interface AgentTextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface AgentToolCallBlock {
+  type: 'tool_call';
+  callId: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface AgentToolResultBlock {
+  type: 'tool_result';
+  callId: string;
+  name: string;
+  status: 'completed' | 'failed' | 'cancelled';
+  summary: string;
+  content: string;
+  evidenceRefs: string[];
+  observationRefs: string[];
+  omittedContentRef?: string;
+  isError?: boolean;
+}
+
+export type AgentContentBlock = AgentTextBlock | AgentToolCallBlock | AgentToolResultBlock;
+
+export interface AgentMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'tool' | 'system';
+  content: AgentContentBlock[];
+  createdAt: string;
+  /** Opaque provider continuation data is transport-owned and never evidence. */
+  providerState?: Record<string, unknown>;
+}
+
+/** Immutable provenance for the exact portion of a file exposed to a model. */
+export interface FileSliceObservation {
+  path: string;
+  snapshotSha256: string;
+  sliceSha256: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  startByte: number;
+  endByte: number;
+  text: string;
+  truncated: boolean;
+}
+
+/** Compact model-facing projection; the ActionOutcome remains canonical truth. */
+export interface VerifiedToolResultProjection {
+  callId: string;
+  capabilityId: string;
+  target: string;
+  status: AgentToolResultBlock['status'];
+  summary: string;
+  content: string;
+  evidenceRefs: string[];
+  observationRefs: string[];
+  omittedContentRef?: string;
+  limitations?: string[];
+}
+
 export interface ContextSource {
   id: string;
   title: string;
@@ -351,6 +421,19 @@ export interface ContextPacketAudit {
   contradictionCount?: number;
   unresolvedConflictIds?: string[];
   provenanceCoverage?: number;
+  /** Advisory ranking from an experimental selector. It is never applied by
+   * the context compiler and never changes authority or token admission. */
+  shadowSelection?: {
+    selectorId: string;
+    recommendedSourceIds: string[];
+    deterministicSourceIds: string[];
+    overlapRate: number;
+    missedDeterministicSourceIds: string[];
+    extraSourceIds: string[];
+    applied: false;
+    authorityIsolation: true;
+    error?: string;
+  };
 }
 
 export interface ContextPacket {
@@ -486,11 +569,21 @@ export interface ModelRequestAudit {
   promptHash: string;
   systemHash: string;
   contextHash: string;
+  /** Provider-facing action protocol used for this request. */
+  toolProtocol?: 'native' | 'canonical_json';
   /** Hash of the deliberately stable prefix used for provider prompt caching. */
   stablePrefixHash?: string;
   /** Actual provider count; absent before or when a provider omits usage. */
   actualInputTokens?: number;
   tokenEstimateError?: number;
+  /** Why this inference pass exists; used for adaptive routing and evals. */
+  inferencePurpose?: 'conversation' | 'tool_selection' | 'diagnosis' | 'completion' | 'synthesis';
+  reasoningEffort?: 'off' | 'low' | 'medium' | 'high' | 'max';
+  messageIds?: string[];
+  omittedMessageIds?: string[];
+  preservedToolPairCount?: number;
+  fileSliceRefs?: Array<Pick<FileSliceObservation, 'path' | 'snapshotSha256' | 'startLine' | 'endLine'>>;
+  omittedContentRefs?: string[];
 }
 
 export interface ModelProposalResult {
@@ -498,6 +591,15 @@ export interface ModelProposalResult {
   usage: ModelUsage;
   model: string;
   requestAudit?: ModelRequestAudit;
+  /** Exact provider-neutral assistant output that produced the proposal. */
+  assistantMessage?: AgentMessage;
+  proposalToolCallId?: string;
+  proposalToolName?: string;
+  additionalProposals?: Array<{
+    proposal: WorkflowActionProposal;
+    toolCallId: string;
+    toolName: string;
+  }>;
 }
 
 export interface WorkflowStepRecord {
@@ -510,6 +612,7 @@ export interface WorkflowStepRecord {
   outcome?: ActionOutcome;
   causal?: CausalRecord;
   progress?: ProgressAssessment;
+  assistantMessage?: AgentMessage;
 }
 
 export interface WorkflowRunResult {
@@ -678,6 +781,7 @@ export interface WorkflowCheckpoint {
 
 export interface JsonSchema {
   type: 'object' | 'array' | 'string' | 'number' | 'integer' | 'boolean' | 'null';
+  description?: string;
   required?: string[];
   properties?: Record<string, JsonSchema>;
   items?: JsonSchema;

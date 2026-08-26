@@ -1,0 +1,519 @@
+"""Tests for the Textual keyboard parser monkey-patch.
+
+See `_textual_patches.py` and Textualize/textual#6378.
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from textual import events
+from textual._time import get_time
+from textual._xterm_parser import XTermParser
+from textual.app import App, ComposeResult
+from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
+from textual.geometry import Offset
+from textual.selection import Selection
+from textual.widgets import Markdown, Static
+
+from deepagents_code import _textual_patches  # triggers patch
+from deepagents_code.tui.widgets.diff import _DiffRowStatic
+
+
+def _keys_for(sequence: str, *, alt: bool) -> list[tuple[str, str | None]]:
+    parser = XTermParser.__new__(XTermParser)
+    return [
+        (event.key, event.character)
+        for event in parser._sequence_to_key_events(sequence, alt=alt)
+    ]
+
+
+class SelectableTextApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield Static("alpha beta gamma", id="msg")
+
+
+class SelectableDiffApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield _DiffRowStatic(
+            Content(" 1 - removed word"), prefix_len=5, id="diff-before"
+        )
+        yield _DiffRowStatic(Content(" 1 + added word"), prefix_len=5, id="diff-row")
+
+
+class SelectableMarkdownApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield Markdown("alpha **beta** gamma", id="msg")
+
+
+class SelectableHistoryApp(App[None]):
+    def compose(self) -> ComposeResult:
+        with Vertical(id="history"):
+            yield Static("first message", id="first")
+            yield Static("second message", id="second")
+
+
+class SelectableScrollApp(App[None]):
+    CSS = "VerticalScroll { height: 8; }"
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="history"):
+            for index in range(1, 31):
+                yield Static(f"line{index:02d} content", id=f"row{index}")
+
+
+class TestPatchedWordSelection:
+    async def test_double_click_selects_word_not_entire_widget(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.double_click("#msg", offset=(7, 0))
+
+            assert pilot.app.screen.get_selected_text() == "beta"
+
+    async def test_double_click_drag_expands_to_word_boundaries(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            widget = pilot.app.query_one("#msg", Static)
+            start = widget.content_region.offset + Offset(1, 0)
+            pilot.app._click_chain_last_offset = start
+            pilot.app._click_chain_last_time = get_time()
+
+            await pilot.mouse_down("#msg", offset=(1, 0))
+            await pilot.mouse_up("#msg", offset=(13, 0))
+
+            assert pilot.app.screen.get_selected_text() == "alpha beta gamma"
+
+    async def test_double_click_falls_back_for_non_text_renderable(self) -> None:
+        async with SelectableMarkdownApp().run_test() as pilot:
+            await pilot.double_click("#msg", offset=(7, 0))
+
+            assert pilot.app.screen.get_selected_text() is not None
+
+    async def test_triple_click_selects_clicked_widget_not_history(self) -> None:
+        async with SelectableHistoryApp().run_test() as pilot:
+            await pilot.triple_click("#second", offset=(1, 0))
+
+            assert pilot.app.screen.get_selected_text() == "second message"
+
+    async def test_shift_click_extends_drag_selection_from_anchor(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(0, 0))
+            await pilot.mouse_up("#msg", offset=(4, 0))
+            assert pilot.app.screen.get_selected_text() == "alpha"
+
+            await pilot.click("#msg", offset=(11, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "alpha beta g"
+
+    async def test_shift_click_preserves_backward_drag_anchor(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(15, 0))
+            await pilot.mouse_up("#msg", offset=(11, 0))
+            assert pilot.app.screen.get_selected_text() == "gamma"
+
+            await pilot.click("#msg", offset=(0, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "alpha beta gamma"
+
+    async def test_shift_click_rejects_detached_markdown_anchor(self) -> None:
+        async with SelectableMarkdownApp().run_test() as pilot:
+            screen = pilot.app.screen
+            document = pilot.app.query_one("#msg", Markdown)
+            await pilot.mouse_down("#msg", offset=(15, 0))
+            await pilot.mouse_up("#msg", offset=(11, 0))
+            select_state = screen._select_state
+            assert select_state is not None
+            anchor_widget = select_state.start.content_widget
+            assert anchor_widget is not None
+
+            await document.update("replacement text")
+            assert not anchor_widget.is_attached
+            await pilot.click("#msg", offset=(0, 0), shift=True)
+
+            assert screen.get_selected_text() is None
+
+    async def test_shift_click_extends_from_anchor_after_scroll(self) -> None:
+        async with SelectableScrollApp().run_test(size=(40, 8)) as pilot:
+            await pilot.mouse_down("#row1", offset=(0, 0))
+            await pilot.mouse_up("#row2", offset=(6, 0))
+            history = pilot.app.query_one("#history", VerticalScroll)
+            history.scroll_to(y=10, animate=False)
+            await pilot.pause()
+
+            await pilot.click("#row14", offset=(6, 0), shift=True)
+
+            selected = pilot.app.screen.get_selected_text()
+            assert selected is not None
+            assert selected.startswith("line01 content")
+            assert selected.endswith("line14")
+
+    async def test_shift_click_ignores_unmodified_click(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(0, 0))
+            await pilot.mouse_up("#msg", offset=(4, 0))
+            assert pilot.app.screen.get_selected_text() == "alpha"
+
+            await pilot.click("#msg", offset=(11, 0))
+
+            assert pilot.app.screen.get_selected_text() is None
+
+    async def test_shift_click_extends_selection_across_widgets(self) -> None:
+        async with SelectableHistoryApp().run_test() as pilot:
+            await pilot.mouse_down("#first", offset=(6, 0))
+            await pilot.mouse_up("#first", offset=(12, 0))
+            assert pilot.app.screen.get_selected_text() == "message"
+
+            await pilot.click("#second", offset=(6, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "message\nsecond"
+
+    async def test_shift_click_without_selection_remains_unselected(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.click("#msg", offset=(7, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() is None
+
+
+class TestDetachedHitGuard:
+    """Coverage of the Textualize/textual#6643 crash guard."""
+
+    async def test_mouse_down_on_detached_widget_does_not_crash(self) -> None:
+        """A press on a widget pruned since the last repaint must be ignored.
+
+        `Markdown.update` — which `MarkdownStream` runs on every streaming
+        assistant message — detaches its old blocks while the compositor still
+        reports them as visible. `_detach` is exactly what Textual calls during
+        that prune, so calling it directly pins the race window deterministically
+        instead of spinning the event loop until it happens to be observed.
+        Without the guard, `Screen._forward_event` raises `AttributeError` on the
+        detached widget's `None` parent and takes the whole app down.
+        """
+        async with SelectableMarkdownApp().run_test() as pilot:
+            screen = pilot.app.screen
+            document = pilot.app.query_one("#msg", Markdown)
+            paragraph = document.query("*").first()
+            x = paragraph.region.x + 1
+            y = paragraph.region.y
+            assert screen._compositor.get_widget_and_offset_at(x, y)[0] is paragraph
+
+            paragraph._detach()
+            try:
+                assert screen.get_widget_and_offset_at(x, y) == (None, None)
+                screen._forward_event(
+                    events.MouseDown(None, x, y, 0, 0, 1, False, False, False)
+                )
+
+                assert screen._select_state is None
+            finally:
+                # Textual's own teardown asserts every widget still has a
+                # parent, so hand the simulated prune victim back to the DOM.
+                paragraph._attach(document)
+
+    async def test_attached_widget_hit_is_still_reported(self) -> None:
+        """The guard must only drop detached hits, not live ones."""
+        async with SelectableTextApp().run_test() as pilot:
+            widget = pilot.app.query_one("#msg", Static)
+            offset = widget.content_region.offset + Offset(2, 0)
+
+            hit, hit_offset = pilot.app.screen.get_widget_and_offset_at(*offset)
+
+            assert hit is widget
+            assert hit_offset == Offset(2, 0)
+
+
+def test_missing_shift_selection_internals_does_not_break_import() -> None:
+    """Missing private classes must skip only the best-effort Shift patch."""
+    code = (
+        "import textual.selection\n"
+        "del textual.selection.SelectEnd\n"
+        "del textual.selection.SelectState\n"
+        "import deepagents_code._textual_patches\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+class TestPatchedSequenceToKeyEvents:
+    r"""Targeted coverage of the two interventions in the shim."""
+
+    def test_reissue_path_preserves_alt_for_enter(self) -> None:
+        r"""Correctness fix: `\r` with `alt=True` must emit `alt+enter`.
+
+        Without the patch, the tuple branch in upstream drops `alt` and
+        VSCode `sendSequence` shift+enter arrives as bare `enter`.
+        """
+        assert _keys_for("\r", alt=True) == [("alt+enter", "\r")]
+
+    def test_fast_path_decodes_esc_cr_as_alt_enter(self) -> None:
+        r"""Fast path: `\x1b\r` with `alt=False` short-circuits to `alt+enter`.
+
+        Without the fast path, upstream stalls for ~100 ms waiting for
+        more bytes before reissuing.
+        """
+        assert _keys_for("\x1b\r", alt=False) == [("alt+enter", None)]
+
+    def test_kitty_extended_key_sequence_unchanged(self) -> None:
+        r"""Regression guard: kitty `CSI 13;2u` must still decode natively.
+
+        The patch only intercepts single-byte tuple mappings; extended
+        key sequences are handled by the unmodified upstream path.
+        """
+        assert _keys_for("\x1b[13;2u", alt=False) == [("shift+enter", None)]
+
+    def test_fast_path_double_escape_yields_alt_escape(self) -> None:
+        r"""Pin the documented semantic: `\x1b\x1b` emits `alt+escape` immediately.
+
+        Upstream Textual waits the full escape-delay before giving up; the
+        fast path short-circuits with zero latency. Any refactor that breaks
+        this should fail loudly rather than silently reverting the behavior.
+        """
+        assert _keys_for("\x1b\x1b", alt=False) == [("alt+escape", None)]
+
+    def test_fast_path_falls_through_when_inner_byte_unmapped(self) -> None:
+        r"""`\x1b<printable>` must bypass the fast path and defer to upstream.
+
+        Pins the `isinstance(inner, tuple)` guard — the `.get()` returns
+        `None` for unmapped bytes, which must not be treated as an alt key.
+        """
+        assert _keys_for("\x1bZ", alt=False) == []
+
+    @pytest.mark.parametrize(
+        ("sequence", "key"),
+        [
+            # Plain press, no associated text.
+            ("\x1b[57358u", "caps_lock"),
+            # Conformant flags-25 form: modifier + associated text.
+            ("\x1b[57358;1;65u", "caps_lock"),
+            # Lock bit set in the modifier mask.
+            ("\x1b[57358;65;65u", "caps_lock"),
+            # Other modifier bits set alongside the lock key.
+            ("\x1b[57358;64;65u", "caps_lock"),
+            # Alternate-key sub-field (iTerm2): `unicode:shifted`.
+            ("\x1b[57358:65;1;65u", "caps_lock"),
+            # Event-type sub-field on the modifier field.
+            ("\x1b[57358;1:1;65u", "caps_lock"),
+            # Num Lock and Scroll Lock use the same encoding family.
+            ("\x1b[57360;1;65u", "num_lock"),
+            ("\x1b[57359;1;65u", "scroll_lock"),
+        ],
+    )
+    def test_kitty_lock_keys_never_carry_text(self, sequence: str, key: str) -> None:
+        r"""Lock keys must decode to a single character-less event.
+
+        Under the kitty protocol with associated-text reporting, terminals
+        (notably iTerm2) encode Caps Lock with the letter the next key would
+        have produced. Without the patch Textual either types that letter or,
+        when `:` sub-fields are present, leaks the raw sequence byte by byte.
+        The patch collapses every lock-key sequence to a text-free event.
+        """
+        assert _keys_for(sequence, alt=False) == [(key, None)]
+
+    def test_kitty_subfield_strip_preserves_normal_keys(self) -> None:
+        r"""Alternate-key sub-fields on text keys still decode to the key.
+
+        `CSI 97:65;1;65u` is the `a` key with shifted alternate `A`; only the
+        primary code point and associated text matter to Textual. This guards
+        against the sub-field strip swallowing real characters.
+        """
+        assert _keys_for("\x1b[97:65;1;65u", alt=False) == [("A", "A")]
+
+    def test_kitty_subfield_strip_preserves_all_associated_text(self) -> None:
+        r"""Textual 8.2.8 receives every colon-separated associated character."""
+        assert _keys_for("\x1b[58;2;126:47u", alt=False) == [
+            ("tilde", "~"),
+            ("slash", "/"),
+        ]
+
+    @pytest.mark.parametrize(
+        ("sequence", "key"),
+        [
+            # `~`-terminated sequence (Delete) with an event-type `:` sub-field.
+            ("\x1b[3:3~", "delete"),
+            # Cursor key (letter terminator) with a `:` sub-field on the
+            # modifier field.
+            ("\x1b[1;5:1C", "ctrl+right"),
+        ],
+    )
+    def test_kitty_subfield_strip_handles_non_u_terminators(
+        self, sequence: str, key: str
+    ) -> None:
+        r"""Sub-field stripping covers `~` and letter terminators, not just `u`.
+
+        `_KITTY_SUBFIELD_KEY` matches terminators `[u~ABCDEFHPQRS]`, so F-keys,
+        arrows, and Insert/Delete carrying `:` sub-fields are normalized rather
+        than leaked byte by byte. Every other test ends in `u`; this pins the
+        non-`u` paths against a regex regression that would reintroduce the
+        very byte-by-byte leak this patch exists to fix.
+        """
+        assert _keys_for(sequence, alt=False) == [(key, None)]
+
+    @pytest.mark.parametrize(
+        "sequence",
+        [
+            # iTerm2 Caps Lock toggle: bare upper-case code point, no fields.
+            "\x1b[65u",
+            # With an explicit "no modifiers" field (value 1).
+            "\x1b[65;1u",
+            # Upper-case letters across the ASCII range.
+            "\x1b[90u",
+            # Caps-lock bit present in the modifier mask, still no text.
+            "\x1b[67;65u",
+        ],
+    )
+    def test_iterm_caps_lock_toggle_inserts_nothing(self, sequence: str) -> None:
+        r"""iTerm2's bare upper-case Caps Lock report must not type.
+
+        iTerm2 encodes the Caps Lock toggle as the upper-case letter that
+        would be produced next (`CSI 65 u` → 'A') rather than the kitty
+        functional code, with no associated-text field. The kitty spec never
+        emits an upper-case primary code point for a real press, so the patch
+        treats it as the lock toggle and drops the character.
+        """
+        assert _keys_for(sequence, alt=False) == [("caps_lock", None)]
+
+    @pytest.mark.parametrize(
+        ("sequence", "expected"),
+        [
+            # Lower-case letters are always real text.
+            ("\x1b[97u", [("a", "a")]),
+            # Shift+A reported as lower-case primary + shift modifier.
+            ("\x1b[97;2u", [("shift+a", None)]),
+            # Upper-case primary WITH associated text is a real character
+            # (e.g. caps-on typing): the text field disambiguates it.
+            ("\x1b[65;1;65u", [("A", "A")]),
+            ("\x1b[67;65;67u", [("C", "C")]),
+            # Upper-case primary with a real modifier (ctrl) and no text is a
+            # genuine press — the `_REAL_MODIFIER_MASK` guard must not drop it.
+            ("\x1b[65;5u", [("ctrl+A", None)]),
+        ],
+    )
+    def test_iterm_caps_lock_guard_preserves_real_keys(
+        self, sequence: str, expected: list[tuple[str, str | None]]
+    ) -> None:
+        r"""The Caps Lock guard must not swallow genuine key presses.
+
+        Only a bare upper-case primary code point with no real modifiers and
+        no associated text is treated as the toggle; everything else decodes
+        normally.
+        """
+        assert _keys_for(sequence, alt=False) == expected
+
+
+class TestGutterClampWatcher:
+    """Diff gutters stay outside selections from every selection-map update."""
+
+    async def test_triple_click_selects_source_without_gutter(self) -> None:
+        """Widget select-all must be clamped after its direct map assignment."""
+        async with SelectableDiffApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = pilot.app.query_one("#diff-row", _DiffRowStatic)
+
+            await pilot.triple_click("#diff-row", offset=(7, 0))
+
+            assert screen.selections[row] == Selection(Offset(5, 0), None)
+            assert screen.get_selected_text() == "added word"
+
+    @pytest.mark.parametrize("x", [1, 3], ids=["line-number", "marker"])
+    async def test_double_click_gutter_selects_nothing(self, x: int) -> None:
+        """Word selection must not copy either non-whitespace gutter token."""
+        async with SelectableDiffApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = pilot.app.query_one("#diff-row", _DiffRowStatic)
+
+            await pilot.double_click("#diff-row", offset=(x, 0))
+
+            assert row not in screen.selections
+            assert screen.get_selected_text() is None
+
+    async def test_double_click_source_word_remains_selected(self) -> None:
+        """Clamping must preserve word bounds that already start in source text."""
+        async with SelectableDiffApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = pilot.app.query_one("#diff-row", _DiffRowStatic)
+
+            await pilot.double_click("#diff-row", offset=(7, 0))
+
+            assert screen.selections[row] == Selection(Offset(5, 0), Offset(10, 0))
+            assert screen.get_selected_text() == "added"
+
+    async def test_drag_across_rows_clamps_each_gutter(self) -> None:
+        """A multi-row drag must retain source text without either gutter."""
+        async with SelectableDiffApp().run_test() as pilot:
+            screen = pilot.app.screen
+            before = pilot.app.query_one("#diff-before", _DiffRowStatic)
+            after = pilot.app.query_one("#diff-row", _DiffRowStatic)
+
+            await pilot.mouse_down("#diff-before", offset=(1, 0))
+            await pilot.mouse_up("#diff-row", offset=(10, 0))
+
+            assert screen.selections == {
+                before: Selection(Offset(5, 0), None),
+                after: Selection(Offset(5, 0), Offset(10, 0)),
+            }
+            assert screen.get_selected_text() == "removed word\nadded"
+
+    async def test_dropping_the_only_selection_does_not_raise(self) -> None:
+        """The watcher can delete its only entry while clamping the map in place."""
+        async with SelectableTextApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = _DiffRowStatic(Content(" 1 + added"), prefix_len=5)
+            screen.selections = {  # ty: ignore[invalid-assignment]
+                row: Selection(Offset(2, 0), Offset(4, 0))
+            }
+
+            await pilot.pause()
+
+            assert row not in screen.selections
+
+    async def test_dropping_first_of_two_selections_does_not_raise(self) -> None:
+        """Deleting one entry must not disturb a later row that is retained."""
+        async with SelectableTextApp().run_test() as pilot:
+            screen = pilot.app.screen
+            dropped = _DiffRowStatic(Content(" 1 + added"), prefix_len=5)
+            kept = _DiffRowStatic(Content(" 2 + kept"), prefix_len=5)
+            screen.selections = {  # ty: ignore[invalid-assignment]
+                dropped: Selection(Offset(2, 0), Offset(4, 0)),
+                kept: Selection(Offset(0, 0), Offset(7, 0)),
+            }
+
+            await pilot.pause()
+
+            assert screen.selections == {
+                kept: Selection(Offset(5, 0), Offset(7, 0)),
+            }
+
+
+def test_app_imports_textual_patches_for_side_effect() -> None:
+    """`app.py` must import `_textual_patches` for the patch to install.
+
+    Direct-import tests would pass even if the side-effect import were
+    removed, so silently breaking shift+enter for VSCode `sendSequence`
+    users. A static AST check closes that gap without spawning a subprocess.
+    """
+    spec = importlib.util.find_spec("deepagents_code.app")
+    assert spec is not None
+    assert spec.origin is not None
+
+    tree = ast.parse(Path(spec.origin).read_text(encoding="utf-8"))
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "deepagents_code"
+        for alias in node.names
+    }
+    assert "_textual_patches" in imported, (
+        "deepagents_code/app.py must import `_textual_patches` as a side "
+        "effect; removing it silently breaks shift+enter via VSCode "
+        "sendSequence. See `_textual_patches.py` for context."
+    )

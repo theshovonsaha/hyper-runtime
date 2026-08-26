@@ -1,4 +1,5 @@
 import type {
+  AgentMessage,
   ContextAuthority,
   ContextPacket,
   ContextPacketAudit,
@@ -95,10 +96,148 @@ export interface CompileContextInput {
   sources: ContextSource[];
   tokenBudget: number;
   now: string;
+  shadowSelector?: ShadowContextSelector;
+}
+
+export interface ShadowContextSelectionInput {
+  phase: WorkflowPhase;
+  objective: string;
+  focusTags: string[];
+  candidates: ContextSource[];
+  tokenBudget: number;
+  now: string;
+}
+
+/** Experimental selectors can recommend a ranking but cannot change the
+ * compiler result. This is deliberately synchronous and data-only so no model
+ * call or side effect can hide inside context compilation. */
+export interface ShadowContextSelector {
+  readonly id: string;
+  rank(input: ShadowContextSelectionInput): Array<{ sourceId: string; score: number }>;
+}
+
+export interface LinearContextSelectorWeights {
+  priority: number;
+  focusOverlap: number;
+  phaseMatch: number;
+  semanticPhaseMatch: number;
+  confidence: number;
+  relationCount: number;
+  recency: number;
+}
+
+/** A serializable weighted ranker suitable for weights learned offline. It has
+ * no authority feature and is accepted only as a shadow selector. */
+export class LinearShadowContextSelector implements ShadowContextSelector {
+  constructor(readonly id: string, readonly weights: LinearContextSelectorWeights) {
+    if (!id.trim()) throw new Error('Shadow selector ID is required.');
+    if (Object.values(weights).some(value => !Number.isFinite(value))) {
+      throw new Error('Shadow selector weights must be finite.');
+    }
+  }
+
+  rank(input: ShadowContextSelectionInput): Array<{ sourceId: string; score: number }> {
+    const focus = new Set(input.focusTags.map(tag => tag.toLowerCase()));
+    const now = Date.parse(input.now);
+    return input.candidates.map(source => {
+      const createdAt = Date.parse(source.createdAt);
+      const ageDays = Number.isFinite(now) && Number.isFinite(createdAt)
+        ? Math.max(0, now - createdAt) / 86_400_000
+        : 0;
+      const score = source.priority * this.weights.priority
+        + source.tags.filter(tag => focus.has(tag.toLowerCase())).length * this.weights.focusOverlap
+        + (source.tags.some(tag => tag.toLowerCase() === input.phase) ? this.weights.phaseMatch : 0)
+        + (source.semanticTag && PHASE_CONTEXT_TAGS[input.phase].includes(source.semanticTag) ? this.weights.semanticPhaseMatch : 0)
+        + (source.confidence ?? 0.5) * this.weights.confidence
+        + (source.relations?.length ?? 0) * this.weights.relationCount
+        + (1 / (1 + ageDays)) * this.weights.recency;
+      return { sourceId: source.id, score };
+    }).sort((left, right) => right.score - left.score || left.sourceId.localeCompare(right.sourceId));
+  }
+}
+
+export interface ShadowPromotionMetrics {
+  taskCompletionRate: number;
+  contextRecallRate: number;
+  unauthorizedEffectRate: number;
+  falseCompletionRate: number;
+  averageInputTokens: number;
+}
+
+export function assessShadowSelectorPromotion(
+  baseline: ShadowPromotionMetrics,
+  candidate: ShadowPromotionMetrics,
+): { eligibleForReviewedExperiment: boolean; activationRequiresHumanReview: true; criteria: Record<string, boolean> } {
+  const criteria = {
+    task_completion_not_worse: candidate.taskCompletionRate >= baseline.taskCompletionRate,
+    context_recall_not_worse: candidate.contextRecallRate >= baseline.contextRecallRate,
+    unauthorized_effects_not_worse: candidate.unauthorizedEffectRate <= baseline.unauthorizedEffectRate,
+    false_completion_not_worse: candidate.falseCompletionRate <= baseline.falseCompletionRate,
+    input_tokens_improve: candidate.averageInputTokens < baseline.averageInputTokens,
+  };
+  return {
+    eligibleForReviewedExperiment: Object.values(criteria).every(Boolean),
+    activationRequiresHumanReview: true,
+    criteria,
+  };
 }
 
 export function estimateTokens(content: string): number {
   return Math.max(1, Math.ceil(content.length / 4));
+}
+
+export interface AgentMessageCompaction {
+  messages: AgentMessage[];
+  omittedMessageIds: string[];
+  estimatedTokens: number;
+  preservedToolPairCount: number;
+}
+
+/** Bounded deterministic projection that never separates an assistant tool
+ * call from its immediately following tool-result messages. */
+export function compactAgentMessages(
+  input: AgentMessage[],
+  tokenBudget: number,
+  countTokens: (content: string) => number = estimateTokens,
+): AgentMessageCompaction {
+  const messages = input.map(message => structuredClone(message));
+  if (messages.length === 0) return { messages: [], omittedMessageIds: [], estimatedTokens: 0, preservedToolPairCount: 0 };
+  const units: AgentMessage[][] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    const unit = [message];
+    if (message.role === 'assistant' && message.content.some(block => block.type === 'tool_call')) {
+      const callIds = new Set(message.content.filter(block => block.type === 'tool_call').map(block => block.callId));
+      while (messages[index + 1]?.role === 'tool'
+        && messages[index + 1]!.content.some(block => block.type === 'tool_result' && callIds.has(block.callId))) {
+        unit.push(messages[index + 1]!);
+        index += 1;
+      }
+    }
+    units.push(unit);
+  }
+  const tokens = (unit: AgentMessage[]) => countTokens(JSON.stringify(unit));
+  const first = units.shift()!;
+  const retained = [first];
+  let used = tokens(first);
+  for (const unit of units.reverse()) {
+    const required = tokens(unit);
+    if (used + required <= tokenBudget) {
+      retained.splice(1, 0, unit);
+      used += required;
+    }
+  }
+  const retainedIds = new Set(retained.flat().map(message => message.id));
+  const omittedMessageIds = messages.filter(message => !retainedIds.has(message.id)).map(message => message.id);
+  const output = retained.flat();
+  return {
+    messages: output,
+    omittedMessageIds,
+    estimatedTokens: countTokens(JSON.stringify(output)),
+    preservedToolPairCount: output.filter(message =>
+      message.role === 'tool' && message.content.some(block => block.type === 'tool_result'),
+    ).length,
+  };
 }
 
 /** Serializes untrusted runtime data into a complete JSON value under a hard
@@ -342,6 +481,73 @@ export class DynamicContextCompiler {
     const orderedExclusions = input.sources
       .filter(source => !included.has(source.id))
       .map(source => exclusions.get(source.id) ?? { sourceId: source.id, reason: 'budget' as const });
+    const audit = packetAudit(
+      input.sources.length,
+      items,
+      stableTokens,
+      duplicateTokensRemoved,
+      input.tokenBudget,
+      input.sources,
+    );
+    if (input.shadowSelector) {
+      const deterministicSourceIds = items.map(item => item.sourceId);
+      try {
+        const eligibleIds = new Set(candidates.map(candidate => candidate.source.id));
+        const ranked = input.shadowSelector.rank({
+          phase: input.phase,
+          objective: input.objective,
+          focusTags: [...input.focusTags],
+          candidates: candidates.map(candidate => structuredClone(candidate.source)),
+          tokenBudget: input.tokenBudget,
+          now: input.now,
+        });
+        const recommendedSourceIds: string[] = [];
+        const seen = new Set<string>();
+        let shadowTokens = 0;
+        // Directive/constraint state is injected by the deterministic boundary,
+        // even when a learned ranker omits or down-ranks it.
+        for (const item of stableItems) {
+          recommendedSourceIds.push(item.sourceId);
+          seen.add(item.sourceId);
+          shadowTokens += item.estimatedTokens;
+        }
+        for (const candidate of ranked) {
+          if (!eligibleIds.has(candidate.sourceId) || seen.has(candidate.sourceId) || !Number.isFinite(candidate.score)) continue;
+          const source = candidates.find(item => item.source.id === candidate.sourceId)?.source;
+          if (!source || source.authority === 'directive' || source.authority === 'constraint') continue;
+          const tokens = packetItem(source, candidate.score).estimatedTokens;
+          if (shadowTokens + tokens > input.tokenBudget) continue;
+          recommendedSourceIds.push(candidate.sourceId);
+          seen.add(candidate.sourceId);
+          shadowTokens += tokens;
+        }
+        const deterministic = new Set(deterministicSourceIds);
+        const recommended = new Set(recommendedSourceIds);
+        const overlap = recommendedSourceIds.filter(id => deterministic.has(id)).length;
+        audit.shadowSelection = {
+          selectorId: input.shadowSelector.id,
+          recommendedSourceIds,
+          deterministicSourceIds,
+          overlapRate: overlap / Math.max(1, new Set([...recommended, ...deterministic]).size),
+          missedDeterministicSourceIds: deterministicSourceIds.filter(id => !recommended.has(id)),
+          extraSourceIds: recommendedSourceIds.filter(id => !deterministic.has(id)),
+          applied: false,
+          authorityIsolation: true,
+        };
+      } catch (error) {
+        audit.shadowSelection = {
+          selectorId: input.shadowSelector.id,
+          recommendedSourceIds: [],
+          deterministicSourceIds,
+          overlapRate: 0,
+          missedDeterministicSourceIds: [...deterministicSourceIds],
+          extraSourceIds: [],
+          applied: false,
+          authorityIsolation: true,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
 
     return {
       id: `context:${input.runId}:${input.phase}:${input.strategyId}:${input.now}`,
@@ -354,14 +560,7 @@ export class DynamicContextCompiler {
       items,
       excludedSourceIds: orderedExclusions.map(exclusion => exclusion.sourceId),
       exclusions: orderedExclusions,
-      audit: packetAudit(
-        input.sources.length,
-        items,
-        stableTokens,
-        duplicateTokensRemoved,
-        input.tokenBudget,
-        input.sources,
-      ),
+      audit,
       estimatedTokens,
       tokenBudget: input.tokenBudget,
       compiledAt: input.now,

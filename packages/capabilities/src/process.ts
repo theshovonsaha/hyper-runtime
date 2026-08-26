@@ -7,6 +7,7 @@ import type {
   Observation,
   VerificationResult,
 } from '@hyper/contracts';
+import { spawn } from 'node:child_process';
 import { digest, validateGrant, WorkspaceTargetResolver } from './shared';
 
 export interface ProcessArgs extends Record<string, unknown> {
@@ -20,8 +21,43 @@ interface ProcessObservation {
   exitCode: number;
   stdout: string;
   stderr: string;
+  stdoutBytesCaptured?: number;
+  stderrBytesCaptured?: number;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
   timedOut: boolean;
+  cancelled?: boolean;
   sandboxBackend?: string;
+}
+
+async function readProcessStream(
+  stream: AsyncIterable<Uint8Array | string>,
+  maximumBytes: number,
+): Promise<{ text: string; bytesCaptured: number; truncated: boolean }> {
+  const chunks: Uint8Array[] = [];
+  let bytesCaptured = 0;
+  let totalBytes = 0;
+  for await (const chunk of stream) {
+    const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
+    totalBytes += bytes.length;
+    const remaining = Math.max(0, maximumBytes - bytesCaptured);
+    if (remaining > 0) {
+      const retained = bytes.slice(0, remaining);
+      chunks.push(retained);
+      bytesCaptured += retained.length;
+    }
+  }
+  const retained = new Uint8Array(bytesCaptured);
+  let offset = 0;
+  for (const chunk of chunks) {
+    retained.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return {
+    text: new TextDecoder().decode(retained),
+    bytesCaptured,
+    truncated: totalBytes > bytesCaptured,
+  };
 }
 
 export interface BoundedProcessOptions {
@@ -118,39 +154,48 @@ export class OciContainerSandboxBackend implements ProcessSandboxBackend {
 }
 
 export class BoundedProcessCapability implements CapabilityAdapter<ProcessArgs> {
-  readonly manifest: CapabilityManifest = {
-    id: 'workspace.process.run',
-    version: '0.2.0',
-    effects: ['process.execute', 'state.read'],
-    requiredEffects: ['process.execute'],
-    targetPatterns: ['workspace/**'],
-    riskCeiling: 4,
-    approval: 'risk_based',
-    idempotent: false,
-    verification: 'required',
-    inputSchema: {
-      type: 'object',
-      required: ['executable', 'arguments'],
-      properties: {
-        executable: { type: 'string' },
-        arguments: { type: 'array', items: { type: 'string' } },
-        timeoutMs: { type: 'integer' },
-        expectedExitCode: { type: 'integer' },
-      },
-      additionalProperties: false,
-    },
-  };
+  readonly manifest: CapabilityManifest;
 
   private readonly resolver: WorkspaceTargetResolver;
   private readonly results = new Map<string, ProcessObservation>();
 
   constructor(root: string, private readonly options: BoundedProcessOptions) {
     this.resolver = new WorkspaceTargetResolver(root);
+    this.manifest = {
+      id: 'workspace.process.run',
+      version: '0.3.0',
+      effects: ['process.execute', 'state.read'],
+      requiredEffects: ['process.execute'],
+      // `workspace/` is the explicit process working-directory root. Keep the
+      // descendant pattern separate: recursive patterns intentionally do not
+      // match their bare container at the policy boundary.
+      targetPatterns: ['workspace/', 'workspace/**'],
+      riskCeiling: 4,
+      approval: 'risk_based',
+      idempotent: false,
+      verification: 'required',
+      inputSchema: {
+        type: 'object',
+        required: ['executable', 'arguments'],
+        properties: {
+          executable: {
+            type: 'string',
+            enum: [...new Set(options.allowedExecutables)],
+            description: 'Choose one exact server-configured executable from this allowlist.',
+          },
+          arguments: { type: 'array', items: { type: 'string' } },
+          timeoutMs: { type: 'integer' },
+          expectedExitCode: { type: 'integer' },
+        },
+        additionalProperties: false,
+      },
+    };
   }
 
   async execute(
     proposal: ActionProposal<ProcessArgs>,
     grant: CapabilityGrant,
+    signal?: AbortSignal,
   ): Promise<CapabilityExecution> {
     const invalid = validateGrant(proposal, grant, this.manifest, 'process.execute');
     if (invalid) return invalid;
@@ -162,13 +207,25 @@ export class BoundedProcessCapability implements CapabilityAdapter<ProcessArgs> 
         evidence: [],
       };
     }
+    if (signal?.aborted) {
+      return {
+        success: false,
+        summary: 'Process was cancelled before execution.',
+        errorCode: 'PROCESS_CANCELLED',
+        effectState: 'not_started',
+        retrySafe: true,
+        reconciliationRequired: false,
+        evidence: [],
+      };
+    }
 
     try {
-      const cwd = this.resolver.resolve(proposal.target);
+      const cwd = this.resolver.resolve(proposal.target, false, true);
       const timeoutMs = Math.min(
         proposal.args.timeoutMs ?? 30_000,
         this.options.maxTimeoutMs ?? 60_000,
       );
+      const max = Math.max(0, this.options.maxOutputBytes ?? 200_000);
       let command = [proposal.args.executable, ...proposal.args.arguments];
       let sandboxAttestation: { backend: string; detail: string } | undefined;
       if (this.options.sandboxBackend) {
@@ -184,45 +241,66 @@ export class BoundedProcessCapability implements CapabilityAdapter<ProcessArgs> 
         });
         sandboxAttestation = { backend: this.options.sandboxBackend.id, detail: probe.detail };
       }
-      const child = Bun.spawn(
-        command,
-        {
+      const child = spawn(command[0]!, command.slice(1), {
           cwd,
           env: this.options.environment ?? {},
-          stdin: 'ignore',
-          stdout: 'pipe',
-          stderr: 'pipe',
-        },
-      );
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
 
       let timedOut = false;
+      let cancelled = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill();
+        child.kill('SIGTERM');
       }, timeoutMs);
-      const [stdoutRaw, stderrRaw, exitCode] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
-      clearTimeout(timer);
-
-      const max = this.options.maxOutputBytes ?? 200_000;
+      const abort = () => {
+        cancelled = true;
+        child.kill('SIGTERM');
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      const exited = new Promise<number>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', code => resolve(code ?? -1));
+      });
+      let stdout;
+      let stderr;
+      let exitCode;
+      try {
+        [stdout, stderr, exitCode] = await Promise.all([
+          readProcessStream(child.stdout!, max),
+          readProcessStream(child.stderr!, max),
+          exited,
+        ]);
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+      }
       const result: ProcessObservation = {
         exitCode,
-        stdout: stdoutRaw.slice(0, max),
-        stderr: stderrRaw.slice(0, max),
+        stdout: stdout.text,
+        stderr: stderr.text,
+        stdoutBytesCaptured: stdout.bytesCaptured,
+        stderrBytesCaptured: stderr.bytesCaptured,
+        stdoutTruncated: stdout.truncated,
+        stderrTruncated: stderr.truncated,
         timedOut,
+        cancelled,
         ...(sandboxAttestation ? { sandboxBackend: sandboxAttestation.backend } : {}),
       };
       this.results.set(proposal.id, result);
       const expected = proposal.args.expectedExitCode ?? 0;
       return {
-        success: !timedOut && exitCode === expected,
-        summary: timedOut
+        success: !timedOut && !cancelled && exitCode === expected,
+        summary: cancelled
+          ? 'Process was cancelled after execution started.'
+          : timedOut
           ? `Process exceeded ${timeoutMs}ms timeout.`
           : `Process exited with code ${exitCode}.`,
-        errorCode: timedOut ? 'PROCESS_TIMEOUT' : exitCode === expected ? undefined : 'UNEXPECTED_EXIT_CODE',
+        errorCode: cancelled ? 'PROCESS_CANCELLED' : timedOut ? 'PROCESS_TIMEOUT' : exitCode === expected ? undefined : 'UNEXPECTED_EXIT_CODE',
+        failureObservationAvailable: cancelled || timedOut || exitCode !== expected,
+        effectState: cancelled || timedOut ? 'partially_applied' : 'applied',
+        retrySafe: !cancelled && !timedOut && exitCode === expected,
+        reconciliationRequired: cancelled || timedOut,
         evidence: [{
           id: `tool:${proposal.id}`,
           kind: 'tool_result',
